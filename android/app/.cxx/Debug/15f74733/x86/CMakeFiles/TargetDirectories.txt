@@ -1,0 +1,2 @@
+C:/Users/VIKRAM/StudioProjects/HealthyChoice/android/app/.cxx/Debug/15f74733/x86/CMakeFiles/edit_cache.dir
+C:/Users/VIKRAM/StudioProjects/HealthyChoice/android/app/.cxx/Debug/15f74733/x86/CMakeFiles/rebuild_cache.dir
