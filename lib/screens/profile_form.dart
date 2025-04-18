@@ -69,12 +69,31 @@ class _ProfileFormState extends State<ProfileForm> {
 
   void handleSubmit() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
+    
+    // Save user profile data
     await prefs.setString('full_name', nameController.text);
     await prefs.setStringList('goals', goals);
     await prefs.setStringList('avoid', avoidItems);
+    
+    // Save health issues separately (this is different from the avoid list)
+    List<String> selectedHealthIssues = [];
+    for (String issue in healthIssues) {
+      if (avoidItems.contains(issue)) {
+        selectedHealthIssues.add(issue);
+      }
+    }
+    await prefs.setStringList('health_issues', selectedHealthIssues);
+    
+    // Save all preference selections
     for (var entry in preferenceSelections.entries) {
       await prefs.setStringList('pref_${entry.key}', entry.value);
     }
+    
+    // Set timestamp for when profile was last updated
+    // This will be used to invalidate caches for product analysis and alternatives
+    await prefs.setInt('profile_last_updated', DateTime.now().millisecondsSinceEpoch);
+    
+    // Navigate to home screen
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
   }
 

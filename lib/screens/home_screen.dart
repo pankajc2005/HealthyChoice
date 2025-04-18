@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
 import '../api/api_service.dart';
 import '../models/product_scan.dart';
+import '../services/scan_history_service.dart';
 import '../widgets/allergen_filter_chip.dart';
 import '../widgets/recent_scan_item.dart';
 import 'camera_screen.dart';
@@ -26,29 +27,40 @@ class _HomeScreenState extends State<HomeScreen> {
     {'label': 'Shellfish', 'status': 'danger', 'icon': Icons.close, 'color': Colors.red},
   ];
 
-  final List<ProductScan> recentScans = [
-    ProductScan(
-      name: "Nature's Path Organic Granola",
-      status: ScanStatus.safe,
-      description: "Gluten-free, No nuts",
-      imagePath: "assets/images/granola.png",
-      scanDate: DateTime.now().subtract(Duration(hours: 2)),
-    ),
-    ProductScan(
-      name: "Greek Yogurt with Berries",
-      status: ScanStatus.caution,
-      description: "Contains dairy",
-      imagePath: "assets/images/yogurt.png",
-      scanDate: DateTime.now().subtract(Duration(hours: 4)),
-    ),
-    ProductScan(
-      name: "Chocolate Chip Cookies",
-      status: ScanStatus.danger,
-      description: "Contains peanuts",
-      imagePath: "assets/images/cookies.png",
-      scanDate: DateTime.now().subtract(Duration(days: 1)),
-    ),
-  ];
+  List<ProductScan> _recentScans = [];
+  bool _isLoadingScans = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRecentScans();
+  }
+
+  Future<void> _loadRecentScans() async {
+    setState(() {
+      _isLoadingScans = true;
+    });
+    
+    final scans = await ScanHistoryService.getRecentScans();
+    
+    setState(() {
+      _recentScans = scans;
+      _isLoadingScans = false;
+    });
+  }
+
+  void _removeScan(ProductScan scan) async {
+    final currentScans = await ScanHistoryService.getRecentScans();
+    final updatedScans = currentScans.where((s) => 
+      s.barcode != scan.barcode || s.scanDate != scan.scanDate).toList();
+    
+    await ScanHistoryService.clearScanHistory();
+    for (var scan in updatedScans) {
+      await ScanHistoryService.saveProductScan(scan);
+    }
+    
+    _loadRecentScans();
+  }
 
   void _searchProduct(String query) async {
     if (query.isEmpty) return;
@@ -84,6 +96,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (result != null) {
       print('Scanned Barcode: $result');
+      _loadRecentScans();
     }
   }
 
@@ -223,32 +236,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 24),
 
               // ✅ Recent Scans
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                child: Text(
-                  'Recent Scans',
-                  style: TextStyle(
-                    fontSize: isSmallScreen ? 20 : 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: recentScans.length,
-                itemBuilder: (context, index) {
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                    child: RecentScanItem(
-                      scan: recentScans[index],
-                      isSmallScreen: isSmallScreen,
-                    ),
-                  );
-                },
-              ),
+              _buildRecentScansSection(),
             ],
           ),
         ),
@@ -264,6 +252,122 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         elevation: 4,
       ),
+    );
+  }
+
+  Widget _buildRecentScansSection() {
+    final size = MediaQuery.of(context).size;
+    final isSmallScreen = size.width < 360;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Recent Scans',
+                style: TextStyle(
+                  fontSize: isSmallScreen ? 20 : 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              if (_recentScans.isNotEmpty)
+                TextButton(
+                  onPressed: () async {
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: Text('Clear History'),
+                        content: Text('Are you sure you want to clear all scan history?'),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: Text('CANCEL'),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            child: Text('CLEAR'),
+                          ),
+                        ],
+                      ),
+                    );
+                    
+                    if (confirmed == true) {
+                      await ScanHistoryService.clearScanHistory();
+                      _loadRecentScans();
+                    }
+                  },
+                  child: Text(
+                    'Clear All',
+                    style: TextStyle(
+                      color: Colors.red,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        
+        if (_isLoadingScans)
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: CircularProgressIndicator(),
+            ),
+          )
+        else if (_recentScans.isEmpty)
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                children: [
+                  Icon(
+                    Icons.history,
+                    size: 48,
+                    color: Colors.grey,
+                  ),
+                  SizedBox(height: 12),
+                  Text(
+                    'No recent scans',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey.shade700,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'Scanned products will appear here',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _recentScans.length,
+            itemBuilder: (context, index) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                child: RecentScanItem(
+                  scan: _recentScans[index],
+                  isSmallScreen: isSmallScreen,
+                  onDelete: () => _removeScan(_recentScans[index]),
+                ),
+              );
+            },
+          ),
+      ],
     );
   }
 }

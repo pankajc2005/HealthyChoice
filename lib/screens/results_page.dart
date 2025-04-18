@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import '../api/api_service.dart';
 import '../models/analysis_result.dart';
+import '../models/product_scan.dart';
 import '../services/gemini_service.dart';
+import '../services/scan_history_service.dart';
 import '../services/service_provider.dart';
 import '../widgets/analysis_display.dart';
 import '../widgets/alternative_products_section.dart';
@@ -174,6 +176,64 @@ class _ResultsPageState extends State<ResultsPage> {
     }
   }
 
+  void _saveToScanHistory(Map<String, dynamic> productData) async {
+    try {
+      // Determine product safety
+      final bool hasAllergens = productData['allergens_tags'] != null && 
+                             (productData['allergens_tags'] as List).isNotEmpty;
+      
+      // Check for user avoidance preferences
+      final bool hasAvoidedIngredients = _checkForAvoidedIngredients(productData);
+      
+      // Determine status
+      ScanStatus status;
+      if (hasAllergens) {
+        status = ScanStatus.danger;
+      } else if (hasAvoidedIngredients) {
+        status = ScanStatus.caution;
+      } else {
+        status = ScanStatus.safe;
+      }
+      
+      // Create description
+      String description = "";
+      if (hasAllergens) {
+        description = "Contains allergens";
+      } else if (hasAvoidedIngredients) {
+        description = "Contains ingredients you avoid";
+      } else {
+        description = "Safe for consumption";
+      }
+      
+      // Add nutrition info if available
+      final nutriments = productData['nutriments'] ?? {};
+      if (nutriments.isNotEmpty) {
+        String nutriInfo = "";
+        if (nutriments['energy-kcal_100g'] != null) {
+          nutriInfo += "${nutriments['energy-kcal_100g']?.toStringAsFixed(0) ?? '?'} kcal";
+        }
+        if (nutriInfo.isNotEmpty) {
+          description += " • $nutriInfo";
+        }
+      }
+      
+      // Create the product scan
+      final ProductScan scan = ProductScan(
+        name: productData['product_name'] ?? "Unknown Product",
+        status: status,
+        description: description,
+        imagePath: "assets/images/placeholder.png", // Use a default placeholder
+        scanDate: DateTime.now(),
+        barcode: widget.barcode,
+      );
+      
+      // Save to history
+      await ScanHistoryService.saveProductScan(scan);
+    } catch (e) {
+      print('Error saving scan to history: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
@@ -245,6 +305,9 @@ class _ResultsPageState extends State<ResultsPage> {
             final bool hasAvoidedIngredients = _checkForAvoidedIngredients(productData);
             final bool isSafe = !hasAllergens; // Product is allergen-safe
             final bool matchesPreferences = !hasAvoidedIngredients; // Product matches user preferences
+            
+            // Save to scan history
+            _saveToScanHistory(productData);
 
           return SafeArea(
               child: CustomScrollView(
@@ -540,7 +603,7 @@ class _ResultsPageState extends State<ResultsPage> {
                                       ],
                                       
                                       // AI Analysis section for unsafe products
-                                      if (!isSafe || !matchesPreferences) ...[
+                                      if (!isSafe) ...[
                                         const SizedBox(height: 16),
                                         Card(
                                           margin: EdgeInsets.zero,
@@ -548,7 +611,7 @@ class _ResultsPageState extends State<ResultsPage> {
                                           shape: RoundedRectangleBorder(
                                             borderRadius: BorderRadius.circular(12),
                                             side: BorderSide(
-                                              color: !isSafe ? Colors.red.shade200 : Colors.amber.shade200,
+                                              color: Colors.red.shade200,
                                               width: 1,
                                             ),
                                           ),
@@ -567,11 +630,11 @@ class _ResultsPageState extends State<ResultsPage> {
                                                   }
                                                 });
                                               },
-                                              collapsedBackgroundColor: !isSafe ? Colors.red.shade50 : Colors.amber.shade50,
-                                              backgroundColor: !isSafe ? Colors.red.shade50 : Colors.amber.shade50,
+                                              collapsedBackgroundColor: Colors.red.shade50,
+                                              backgroundColor: Colors.red.shade50,
                                               leading: Icon(
                                                 Icons.health_and_safety,
-                                                color: !isSafe ? Colors.red.shade700 : Colors.amber.shade700,
+                                                color: Colors.red.shade700,
                                                 size: 24,
                                               ),
                                               title: Text(
@@ -579,12 +642,12 @@ class _ResultsPageState extends State<ResultsPage> {
                                                 style: TextStyle(
                                                   fontSize: 16,
                                                   fontWeight: FontWeight.bold,
-                                                  color: !isSafe ? Colors.red.shade800 : Colors.amber.shade800,
+                                                  color: Colors.red.shade800,
                                                 ),
                                               ),
                                               trailing: Icon(
                                                 _analysisExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                                                color: !isSafe ? Colors.red.shade700 : Colors.amber.shade700,
+                                                color: Colors.red.shade700,
                                               ),
                                               children: [
                                                 if (_isAnalyzing)
@@ -595,13 +658,13 @@ class _ResultsPageState extends State<ResultsPage> {
                                                         children: [
                                                           CircularProgressIndicator(
                                                             strokeWidth: 3,
-                                                            color: !isSafe ? Colors.red.shade400 : Colors.amber.shade400,
+                                                            color: Colors.red.shade400,
                                                           ),
                                                           const SizedBox(height: 16),
                                                           Text(
                                                             "Analyzing product with AI...",
                                                             style: TextStyle(
-                                                              color: !isSafe ? Colors.red.shade700 : Colors.amber.shade700,
+                                                              color: Colors.red.shade700,
                                                               fontWeight: FontWeight.w500,
                                                             ),
                                                           ),
@@ -620,19 +683,17 @@ class _ResultsPageState extends State<ResultsPage> {
                                                           Text(
                                                             _analysisResult!.errorMessage,
                                                             style: TextStyle(
-                                                              color: !isSafe ? Colors.red.shade800 : Colors.amber.shade800,
+                                                              color: Colors.red.shade800,
                                                               fontSize: 14,
                                                             ),
                                                           )
                                                         else ...[
                                                           Text(
-                                                            !isSafe 
-                                                              ? "Why this product may not be safe for you:"
-                                                              : "Why you might want to avoid this product:",
+                                                            "Why this product may not be safe for you:",
                                                             style: TextStyle(
                                                               fontSize: 14,
                                                               fontWeight: FontWeight.w600,
-                                                              color: !isSafe ? Colors.red.shade800 : Colors.amber.shade800,
+                                                              color: Colors.red.shade800,
                                                             ),
                                                           ),
                                                           const SizedBox(height: 8),
@@ -651,7 +712,7 @@ class _ResultsPageState extends State<ResultsPage> {
                                                               style: TextStyle(
                                                                 fontSize: 14,
                                                                 fontWeight: FontWeight.w600,
-                                                                color: !isSafe ? Colors.red.shade800 : Colors.amber.shade800,
+                                                                color: Colors.red.shade800,
                                                               ),
                                                             ),
                                                             const SizedBox(height: 8),
@@ -661,10 +722,10 @@ class _ResultsPageState extends State<ResultsPage> {
                                                                 padding: const EdgeInsets.only(bottom: 10.0),
                                                                 child: Container(
                                                                   decoration: BoxDecoration(
-                                                                    color: (!isSafe ? Colors.red.shade50 : Colors.amber.shade50).withOpacity(0.5),
+                                                                    color: Colors.red.shade50.withOpacity(0.5),
                                                                     borderRadius: BorderRadius.circular(8),
                                                                     border: Border.all(
-                                                                      color: !isSafe ? Colors.red.shade100 : Colors.amber.shade100,
+                                                                      color: Colors.red.shade100,
                                                                       width: 1,
                                                                     ),
                                                                   ),
@@ -675,7 +736,7 @@ class _ResultsPageState extends State<ResultsPage> {
                                                                       Icon(
                                                                         Icons.priority_high,
                                                                         size: 18,
-                                                                        color: !isSafe ? Colors.red.shade700 : Colors.amber.shade700,
+                                                                        color: Colors.red.shade700,
                                                                       ),
                                                                       const SizedBox(width: 10),
                                                                       Expanded(
@@ -735,7 +796,7 @@ class _ResultsPageState extends State<ResultsPage> {
                                                           ],
                                                           
                                                           // Add alternative products section for unsafe products
-                                                          if (!isSafe || !matchesPreferences) ...[
+                                                          if (!isSafe) ...[
                                                             const SizedBox(height: 20),
                                                             Text(
                                                               "Suggested Alternatives:",
@@ -933,7 +994,7 @@ class _ResultsPageState extends State<ResultsPage> {
                         const SizedBox(height: 16),
                         
                         // Add AI analysis panel at the top of the Health Analysis section
-                        if (!isSafe || !matchesPreferences)
+                        if (!isSafe)
                           _buildFixedExpandablePanel(
                             context,
                             productData,
@@ -1739,8 +1800,8 @@ class _ResultsPageState extends State<ResultsPage> {
     bool isSafe,
     bool matchesPreferences,
   ) {
-    // Colors based on product safety
-    final mainColor = !isSafe ? Colors.red : Colors.amber;
+    // Since we only show this for unsafe products, always use red color
+    final mainColor = Colors.red;
     
     return StatefulBuilder(
       builder: (BuildContext context, StateSetter panelSetState) {
@@ -1846,8 +1907,8 @@ class _ResultsPageState extends State<ResultsPage> {
   }
   
   Widget _buildAnalysisContent(Map<String, dynamic> productData, bool isSafe, bool matchesPreferences) {
-    // Colors based on product safety
-    final mainColor = !isSafe ? Colors.red : Colors.amber;
+    // Since we only show this for unsafe products, always use red color
+    final mainColor = Colors.red;
     
     if (_isAnalyzing) {
       return Container(
@@ -2017,7 +2078,7 @@ class _ResultsPageState extends State<ResultsPage> {
           ],
           
           // Alternatives section
-          if (!isSafe || !matchesPreferences) ...[
+          if (!isSafe) ...[
             const SizedBox(height: 20),
             Text(
               "Healthier Alternatives:",

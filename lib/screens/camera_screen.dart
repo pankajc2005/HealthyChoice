@@ -29,10 +29,14 @@ class _ScanPageState extends State<ScanPage> with SingleTickerProviderStateMixin
     setState(() => isScanning = false);
     _playBeep();
 
-    Navigator.push(
+    await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => ResultsPage(barcode: barcode)),
-    ).then((_) => setState(() => isScanning = true));
+    );
+    
+    // Return the barcode to the HomeScreen and resume scanning
+    setState(() => isScanning = true);
+    Navigator.pop(context, barcode);
   }
 
   @override

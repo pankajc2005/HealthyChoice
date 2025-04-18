@@ -10,6 +10,7 @@ class ProductScan {
   final String description;
   final String imagePath;
   final DateTime scanDate;
+  final String barcode;
 
   ProductScan({
     required this.name,
@@ -17,5 +18,6 @@ class ProductScan {
     required this.description,
     required this.imagePath,
     required this.scanDate,
+    required this.barcode,
   });
 }
