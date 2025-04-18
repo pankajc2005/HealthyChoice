@@ -43,11 +43,3 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
-
-# Add .env to gitignore
-.env
-.env.*
-!/env.example
-
-# Add keys.json to gitignore
-assets/config/keys.json

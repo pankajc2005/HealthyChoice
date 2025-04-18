@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'home_screen.dart';
+import 'blindpage.dart';
 
 class ProfileForm extends StatefulWidget {
   const ProfileForm({super.key});
@@ -11,6 +13,8 @@ class ProfileForm extends StatefulWidget {
 
 class _ProfileFormState extends State<ProfileForm> {
   final TextEditingController nameController = TextEditingController();
+  final FlutterTts flutterTts = FlutterTts();
+
   final List<String> goals = [];
   final List<String> avoidItems = [];
   final List<String> healthIssues = [
@@ -27,34 +31,13 @@ class _ProfileFormState extends State<ProfileForm> {
   ];
 
   final Map<String, List<String>> preferenceSections = {
-    "Nutrition": [
-      "High nutrition score",
-      "Low salt",
-      "Low sugar",
-      "Low fat",
-      "Low saturated fat",
-    ],
+    "Nutrition": ["High nutrition score", "Low salt", "Low sugar", "Low fat", "Low saturated fat"],
     "Ingredients": ["Vegan", "Vegetarian", "Palm oil free"],
-    "Processing": [
-      "Minimally processed",
-      "Few or no additives"
-    ],
+    "Processing": ["Minimally processed", "Few or no additives"],
     "Labels": ["Organic", "Fair trade"],
     "Allergens": [
-      "Gluten-free",
-      "Dairy-free",
-      "Egg-free",
-      "Nut-free",
-      "Peanut-free",
-      "Sesame-free",
-      "Soy-free",
-      "Celery-free",
-      "Mustard-free",
-      "Lupin-free",
-      "Fish-free",
-      "Shellfish-free",
-      "Mollusc-free",
-      "Sulfite-free"
+      "Gluten-free", "Dairy-free", "Egg-free", "Nut-free", "Peanut-free", "Sesame-free", "Soy-free",
+      "Celery-free", "Mustard-free", "Lupin-free", "Fish-free", "Shellfish-free", "Mollusc-free", "Sulfite-free"
     ],
   };
 
@@ -66,6 +49,22 @@ class _ProfileFormState extends State<ProfileForm> {
     preferenceSelections = {
       for (var key in preferenceSections.keys) key: [],
     };
+
+    speakBlindNotice();
+  }
+
+  Future<void> speakBlindNotice() async {
+    await flutterTts.setLanguage("en-IN");
+    await flutterTts.setSpeechRate(0.4);
+    await flutterTts.speak(
+      "Welcome to Healthy Choice, your go to for healthy food! If you're visually impaired, tap and hold the screen so we can personalize the app for you.",
+    );
+  }
+
+  void handleBlindUser() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('isBlind', true);
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const BlindPage()));
   }
 
   void handleSubmit() async {
@@ -76,8 +75,7 @@ class _ProfileFormState extends State<ProfileForm> {
     for (var entry in preferenceSelections.entries) {
       await prefs.setStringList('pref_${entry.key}', entry.value);
     }
-    Navigator.pushReplacement(
-        context, MaterialPageRoute(builder: (_) => HomeScreen()));
+    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
   }
 
   void toggleChip(List<String> list, String value) {
@@ -86,105 +84,95 @@ class _ProfileFormState extends State<ProfileForm> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF4A4EDA),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          children: [
-            const SizedBox(height: 40),
-            Center(
-              child: Image.asset(
-                'assets/images/logo.png',
-                height: 100,
+    return GestureDetector(
+      onLongPress: handleBlindUser,
+      child: Scaffold(
+        backgroundColor: const Color(0xFF4A4EDA),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            children: [
+              const SizedBox(height: 40),
+              Center(
+                child: Image.asset('assets/images/logo.png', height: 100),
               ),
-            ),
-            const SizedBox(height: 20),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(20.0),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: const [
-                  BoxShadow(color: Colors.black12, blurRadius: 10)
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                    child: Text(
-                      "Complete Profile",
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF4A4EDA),
+              const SizedBox(height: 20),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(20.0),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10)],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Text(
+                        "Complete Profile",
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF4A4EDA)),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 20),
-                  questionBlock("Full Name", child: TextFormField(
-                    controller: nameController,
-                    decoration: customInputDecoration(),
-                  )),
-                  questionBlock("Goals", child: Wrap(
-                    spacing: 10,
-                    children: [
-                      chip("Weight Loss", goals),
-                      chip("Stay Fit", goals),
-                      chip("Gain Muscle", goals),
-                      chip("Improve Digestion", goals),
-                    ],
-                  )),
-                  questionBlock("Health Issues", child: Wrap(
-                    spacing: 10,
-                    children: healthIssues.map((issue) => chip(issue, avoidItems)).toList(),
-                  )),
-                  questionBlock("Trying to Avoid", child: Wrap(
-                    spacing: 10,
-                    children: [
-                      chip("Salt", avoidItems),
-                      chip("Sugar", avoidItems),
-                      chip("Caffeine", avoidItems),
-                      chip("Processed Foods", avoidItems),
-                    ],
-                  )),
-                  ...preferenceSections.entries.map((entry) {
-                    return questionBlock(entry.key, child: Wrap(
+                    const SizedBox(height: 20),
+                    questionBlock("Full Name", child: TextFormField(
+                      controller: nameController,
+                      decoration: customInputDecoration(),
+                    )),
+                    questionBlock("Goals", child: Wrap(
                       spacing: 10,
-                      runSpacing: 8,
-                      children: entry.value
-                          .map((item) => chip(item, preferenceSelections[entry.key]!))
-                          .toList(),
-                    ));
-                  }).toList(),
-                  const SizedBox(height: 30),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF673BDF),
-                        padding: const EdgeInsets.symmetric(vertical: 16.0),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12.0),
+                      children: [
+                        chip("Weight Loss", goals),
+                        chip("Stay Fit", goals),
+                        chip("Gain Muscle", goals),
+                        chip("Improve Digestion", goals),
+                      ],
+                    )),
+                    questionBlock("Health Issues", child: Wrap(
+                      spacing: 10,
+                      children: healthIssues.map((issue) => chip(issue, avoidItems)).toList(),
+                    )),
+                    questionBlock("Trying to Avoid", child: Wrap(
+                      spacing: 10,
+                      children: [
+                        chip("Salt", avoidItems),
+                        chip("Sugar", avoidItems),
+                        chip("Caffeine", avoidItems),
+                        chip("Processed Foods", avoidItems),
+                      ],
+                    )),
+                    ...preferenceSections.entries.map((entry) {
+                      return questionBlock(entry.key, child: Wrap(
+                        spacing: 10,
+                        runSpacing: 8,
+                        children: entry.value
+                            .map((item) => chip(item, preferenceSelections[entry.key]!))
+                            .toList(),
+                      ));
+                    }).toList(),
+                    const SizedBox(height: 30),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF673BDF),
+                          padding: const EdgeInsets.symmetric(vertical: 16.0),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12.0),
+                          ),
                         ),
-                      ),
-                      onPressed: handleSubmit,
-                      child: const Text(
-                        "Done",
-                        style: TextStyle(
-                          fontSize: 19,
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
+                        onPressed: handleSubmit,
+                        child: const Text(
+                          "Done",
+                          style: TextStyle(fontSize: 19, color: Colors.white, fontWeight: FontWeight.bold),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

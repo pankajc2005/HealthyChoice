@@ -43,7 +43,6 @@ class AnalysisResult {
   final bool isSafeForUser;
   final String safetyReason;
   final Map<String, double> nutritionalValues;
-  final ServingSizeInfo servingSizeInfo;
 
   AnalysisResult({
     required this.isError,
@@ -56,71 +55,36 @@ class AnalysisResult {
     this.isSafeForUser = false,
     this.safetyReason = '',
     this.nutritionalValues = const {},
-    ServingSizeInfo? servingSizeInfo,
-  }) : this.servingSizeInfo = servingSizeInfo ?? ServingSizeInfo();
+  });
 
   factory AnalysisResult.fromJson(Map<String, dynamic> json) {
-    final List<String> recommendations = [];
-    final List<String> healthInsights = [];
-    final List<AlternativeProduct> alternatives = [];
-    final Map<String, double> nutritionalValues = {};
-    
-    // Parse recommendations
-    if (json['recommendations'] != null) {
-      for (final recommendation in json['recommendations']) {
-        recommendations.add(recommendation.toString());
-      }
-    }
-    
-    // Parse health insights
-    if (json['healthInsights'] != null) {
-      for (final insight in json['healthInsights']) {
-        healthInsights.add(insight.toString());
-      }
-    }
-    
-    // Parse alternatives
-    if (json['alternatives'] != null) {
-      for (final alternative in json['alternatives']) {
-        if (alternative is Map<String, dynamic>) {
-          alternatives.add(AlternativeProduct.fromJson(alternative));
-        }
-      }
-    }
-    
-    // Parse nutritional values
+    // Process nutritional values
+    Map<String, double> nutritionalValues = {};
     if (json['nutritionalValues'] != null) {
-      for (final entry in (json['nutritionalValues'] as Map<String, dynamic>).entries) {
-        if (entry.value is num) {
-          nutritionalValues[entry.key] = (entry.value as num).toDouble();
-        } else if (entry.value is String) {
-          try {
-            nutritionalValues[entry.key] = double.parse(entry.value);
-          } catch (e) {
-            // Skip non-numeric values
-          }
+      final nutritionJson = json['nutritionalValues'] as Map<String, dynamic>;
+      nutritionJson.forEach((key, value) {
+        // Convert any numeric values to double
+        if (value is num) {
+          nutritionalValues[key] = value.toDouble();
         }
-      }
-    }
-    
-    // Parse serving size information
-    ServingSizeInfo? servingSizeInfo;
-    if (json['servingSizeInfo'] != null) {
-      servingSizeInfo = ServingSizeInfo.fromJson(json['servingSizeInfo']);
+      });
     }
     
     return AnalysisResult(
       isError: json['isError'] ?? false,
       errorMessage: json['errorMessage'] ?? '',
       compatibility: json['compatibility'] ?? 'unknown',
-      explanation: json['explanation'] ?? 'No explanation available',
-      recommendations: recommendations,
-      healthInsights: healthInsights,
-      alternatives: alternatives,
+      explanation: json['explanation'] ?? '',
+      recommendations: List<String>.from(json['recommendations'] ?? []),
+      healthInsights: List<String>.from(json['healthInsights'] ?? []),
+      alternatives: json['alternatives'] != null
+          ? List<Map<String, dynamic>>.from(json['alternatives'])
+              .map((altJson) => AlternativeProduct.fromJson(altJson))
+              .toList()
+          : [],
       isSafeForUser: json['isSafeForUser'] ?? false,
       safetyReason: json['safetyReason'] ?? '',
       nutritionalValues: nutritionalValues,
-      servingSizeInfo: servingSizeInfo,
     );
   }
 
@@ -136,7 +100,6 @@ class AnalysisResult {
       'isSafeForUser': isSafeForUser,
       'safetyReason': safetyReason,
       'nutritionalValues': nutritionalValues,
-      'servingSizeInfo': servingSizeInfo.toJson(),
     };
   }
 
@@ -152,39 +115,5 @@ class AnalysisResult {
       default:
         return Colors.grey;
     }
-  }
-}
-
-class ServingSizeInfo {
-  final String servingSize;
-  final int servingsPerContainer;
-  final double sugarPerServing;
-  final int percentOfDailyRecommended;
-
-  ServingSizeInfo({
-    this.servingSize = '30g',
-    this.servingsPerContainer = 0,
-    this.sugarPerServing = 0.0,
-    this.percentOfDailyRecommended = 0,
-  });
-
-  factory ServingSizeInfo.fromJson(Map<String, dynamic> json) {
-    return ServingSizeInfo(
-      servingSize: json['servingSize'] ?? '30g',
-      servingsPerContainer: json['servingsPerContainer'] ?? 0,
-      sugarPerServing: json['sugarPerServing'] is num 
-          ? (json['sugarPerServing'] as num).toDouble() 
-          : 0.0,
-      percentOfDailyRecommended: json['percentOfDailyRecommended'] ?? 0,
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'servingSize': servingSize,
-      'servingsPerContainer': servingsPerContainer,
-      'sugarPerServing': sugarPerServing,
-      'percentOfDailyRecommended': percentOfDailyRecommended,
-    };
   }
 } 

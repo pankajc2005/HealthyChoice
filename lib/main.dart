@@ -3,57 +3,29 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/logo_screen.dart';  // Import the LogoScreen
 import 'services/service_provider.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-Future<void> main() async {
-  // Start measuring init time
-  final stopwatch = Stopwatch()..start();
-  
-  // Ensure Flutter is initialized with priority on rendering
+void main() {
+  // Ensure Flutter is initialized
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Set system UI and orientation in parallel to other initialization
-  // This improves startup time by running operations concurrently
-  Future systemConfigFuture = SystemChrome.setPreferredOrientations([
+  // Set preferred orientations for faster startup
+  SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
-  ]).then((_) => SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.dark,
-    ),
-  ));
+    DeviceOrientation.portraitDown,
+  ]);
   
-  // Start loading environment variables but don't wait for completion
-  // We'll access them when needed, preventing startup delay
-  Future envFuture = dotenv.load(fileName: ".env");
-  
-  // Start app immediately for faster perceived loading
+  // Initialize the app immediately without waiting for services
   runApp(NutritionAssistantApp());
   
-  // Finish initialization in background
-  _completeInitializationAsync(stopwatch, systemConfigFuture, envFuture);
+  // Initialize services in the background after app has started
+  _initializeServicesAsync();
 }
 
-/// Finishes any remaining initialization tasks in the background
-/// This allows the UI to appear faster while heavy work completes afterward
-Future<void> _completeInitializationAsync(
-  Stopwatch stopwatch,
-  Future systemConfigFuture,
-  Future envFuture,
-) async {
-  try {
-    // Wait for basic config to complete
-    await Future.wait([systemConfigFuture, envFuture]);
-    
-    // Initialize service provider without blocking UI
-    final serviceProvider = ServiceProvider();
-    // Start service initialization, but don't wait for it
-    serviceProvider.initializeServices();
-    
-    print('App initialization completed in ${stopwatch.elapsedMilliseconds}ms');
-  } catch (e) {
-    print('Background initialization error: $e');
-  }
+// Asynchronously initialize services without blocking the UI
+Future<void> _initializeServicesAsync() async {
+  final serviceProvider = ServiceProvider();
+  // Move service initialization to background
+  serviceProvider.initializeServices();
 }
 
 class NutritionAssistantApp extends StatelessWidget {

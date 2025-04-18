@@ -6,7 +6,6 @@ import '../services/gemini_service.dart';
 import '../services/service_provider.dart';
 import '../widgets/analysis_display.dart';
 import '../widgets/alternative_products_section.dart';
-import '../services/vision_service.dart';
 
 class ResultsPage extends StatefulWidget {
   final String barcode;
@@ -141,60 +140,31 @@ class _ResultsPageState extends State<ResultsPage> {
   // Method to get alternative products for unsafe products
   Future<List<Map<String, dynamic>>> _fetchAlternatives(String barcode, Map<String, dynamic> productData) async {
     try {
-      // Get service provider instance
+      // Get Gemini service instance from the ServiceProvider
       final serviceProvider = ServiceProvider();
-      
-      // If product has an image, try Vision API first for more relevant alternatives
-      if (productData['image_url'] != null) {
-        try {
-          // Properly get VisionService via service provider
-          final visionService = await serviceProvider.getVisionService();
-          
-          // Pass product data along with image URL for better context
-          final imageUrl = productData['image_url']!;
-          print('Analyzing product image with Vision API: $imageUrl');
-          
-          // Get alternatives based on image analysis
-          final alternatives = await visionService.getAlternativeProducts(imageUrl);
-          
-          // If Vision API returned alternatives, use them
-          if (alternatives.isNotEmpty) {
-            print('Found ${alternatives.length} alternatives with Vision API');
-            return alternatives;
-          }
-        } catch (visionError) {
-          // Log error but continue to Gemini fallback
-          print('Vision API error: $visionError');
-        }
-      }
-      
-      // Fallback to Gemini service
-      print('Fetching alternatives with Gemini API');
       final geminiService = await serviceProvider.getGeminiService();
       
-      final alternatives = await geminiService.getSuggestedAlternatives(
+      // Use Gemini to get personalized alternatives
+      return await geminiService.getSuggestedAlternatives(
         productData,
         barcode,
       );
-      
-      return alternatives;
     } catch (e) {
       print('Error fetching alternatives: $e');
       
-      // Fallback to basic alternatives if all APIs fail
+      // Fallback to basic alternatives if API fails
       final String category = productData['categories'] ?? '';
-      final String productName = productData['product_name'] ?? 'Product';
       
       return [
         {
-          'product_name': 'Organic ${category.isNotEmpty ? category.split(',').first : productName}',
+          'product_name': 'Organic ${category.split(',').first}',
           'image_url': null, // No external image
           'nutriscore_grade': 'A',
           'brand': 'Organic Choice',
           'description': 'A healthier alternative with no additives or artificial ingredients.'
         },
         {
-          'product_name': 'Low Sodium ${category.isNotEmpty ? category.split(',').first : productName}',
+          'product_name': 'Low Sodium ${category.split(',').first}',
           'image_url': null, // No external image
           'nutriscore_grade': 'B',
           'brand': 'Health Valley',
@@ -527,89 +497,6 @@ class _ResultsPageState extends State<ResultsPage> {
                               ],
                             ),
 
-                                      // Enhanced version with nuanced safety indicators
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: Container(
-                                              padding: const EdgeInsets.symmetric(vertical: 12),
-                                              decoration: BoxDecoration(
-                                                color: isSafe ? Colors.green.shade50 : Colors.red.shade50,
-                                                borderRadius: BorderRadius.circular(12),
-                                                border: Border.all(
-                                                  color: isSafe ? Colors.green.shade200 : Colors.red.shade200,
-                                                ),
-                                              ),
-                                              child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                                  Icon(
-                                                    isSafe ? Icons.check_circle : Icons.warning,
-                                                    color: isSafe ? Colors.green : Colors.red,
-                                                    size: 20,
-                                                  ),
-                                const SizedBox(width: 8),
-                                Text(
-                                                    isSafe 
-                                                      ? "Safe for you" 
-                                                      : (_analysisResult?.compatibility == 'moderate' 
-                                                          ? "Consume in moderation" 
-                                                          : "Not recommended"),
-                                  style: TextStyle(
-                                                      color: isSafe 
-                                                        ? Colors.green.shade700 
-                                                        : (_analysisResult?.compatibility == 'moderate' 
-                                                            ? Colors.orange.shade700 
-                                                            : Colors.red.shade700),
-                                                      fontWeight: FontWeight.bold,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                ),
-                              ],
-                            ),
-
-                                      // Add serving size info when available
-                                      if (_analysisResult != null && 
-                                          !_analysisResult!.isError && 
-                                          _analysisResult!.nutritionalValues.containsKey('sugars')) ...[
-                                        const SizedBox(height: 8),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 12, 
-                                            vertical: 8,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: Colors.blue.shade50,
-                                            borderRadius: BorderRadius.circular(8),
-                                            border: Border.all(
-                                              color: Colors.blue.shade200,
-                                            ),
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              Icon(
-                                                Icons.info_outline,
-                                                color: Colors.blue.shade700,
-                                                size: 16,
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Expanded(
-                                                child: Text(
-                                                  "Contains ${_analysisResult!.nutritionalValues['sugars']?.toStringAsFixed(1) ?? '0'}g sugar per 100g (${((_analysisResult!.nutritionalValues['sugars'] ?? 0) * 0.3).toStringAsFixed(1)}g per typical serving)",
-                                                  style: TextStyle(
-                                                    fontSize: 12,
-                                                    color: Colors.blue.shade700,
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ],
-                                      
                                       // Add preference match indicator
                                       if (isSafe && !matchesPreferences) ...[
                                         const SizedBox(height: 8),

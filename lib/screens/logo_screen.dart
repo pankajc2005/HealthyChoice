@@ -23,21 +23,23 @@ class _LogoScreenState extends State<LogoScreen> {
       statusBarIconBrightness: Brightness.light,
     ));
     
-    // Initialize app with optimized timing
+    // Simulate logo loading and prepare for navigation
     _initializeApp();
   }
   
   Future<void> _initializeApp() async {
-    // Enable immediate rendering for perceived faster loading
+    // Wait for framework to settle
+    await Future.delayed(const Duration(milliseconds: 200));
+    
+    // Mark logo as loaded to trigger animation
     if (mounted) {
-      // Show logo immediately 
       setState(() {
         _isLogoLoaded = true;
       });
     }
     
-    // Only wait for a minimal time - reduced from 1000ms to 600ms total
-    await Future.delayed(const Duration(milliseconds: 600));
+    // Allow navigation after minimum display time
+    await Future.delayed(const Duration(milliseconds: 800));
     
     if (mounted) {
       setState(() {
@@ -72,10 +74,9 @@ class _LogoScreenState extends State<LogoScreen> {
                   height: _isLogoLoaded ? 300 : 250, // Slightly smaller to speed up loading
                   child: Image.asset(
                     'assets/images/logo.png',
-                    cacheHeight: 300, // Reduced cache size for faster loading
-                    cacheWidth: 300,
-                    filterQuality: FilterQuality.low, // Use lowest quality for splash screen
-                    gaplessPlayback: true, // Prevent flickering during image load
+                    cacheHeight: 600, // Add cache hints for faster loading
+                    cacheWidth: 600,
+                    filterQuality: FilterQuality.medium, // Lower quality for faster loading
                   ),
                 ),
               ),

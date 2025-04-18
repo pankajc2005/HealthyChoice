@@ -14,23 +14,8 @@ class GeminiService {
   static const String _baseApiUrl = 'https://generativelanguage.googleapis.com/v1';
   
   final SharedPreferences _prefs;
-  static const _cachedAnalysisKey = 'cached_product_analysis';
-  static const _cachedAlternativesKey = 'cached_alternatives';
   
   GeminiService(this._prefs);
-  
-  // Add lazy loading capability for heavier operations
-  bool _initialized = false;
-  
-  // Defer heavy initialization until actually needed
-  Future<void> _ensureInitialized() async {
-    if (_initialized) return;
-    
-    // Perform any heavy initialization here
-    // This will only happen when the service is first used
-    
-    _initialized = true;
-  }
   
   // New method to list available models
   Future<List<Map<String, dynamic>>> listAvailableModels() async {
@@ -76,19 +61,16 @@ class GeminiService {
     Map<String, dynamic> productData, 
     String barcode
   ) async {
-    await _ensureInitialized();
-    
-    // Check for cached result first to improve performance
-    final cachedResult = _getCachedAnalysis(barcode);
-    if (cachedResult != null) {
-      return cachedResult;
-    }
-    
     // Get user preferences from SharedPreferences
     final userName = _prefs.getString('full_name') ?? 'User';
     final allergens = _prefs.getStringList('allergens') ?? [];
     final goals = _prefs.getStringList('goals') ?? [];
     final avoid = _prefs.getStringList('avoid') ?? [];
+    
+    // Check cache first
+    final cacheKey = '${barcode}_analysis';
+    final cachedResult = _checkCache(cacheKey);
+    if (cachedResult != null) return cachedResult;
     
     // Extract product information
     final productName = productData['product_name'] ?? 'Unknown Product';
@@ -120,7 +102,7 @@ class GeminiService {
       final analysisResult = await _sendGeminiRequest(prompt);
       
       // Cache the result
-      _cacheAnalysisResult(barcode, analysisResult);
+      _cacheResult(cacheKey, analysisResult);
       
       return analysisResult;
     } catch (e) {
@@ -136,30 +118,21 @@ class GeminiService {
     }
   }
   
-  AnalysisResult? _getCachedAnalysis(String barcode) {
-    try {
-      final cachedResults = _prefs.getString(_cachedAnalysisKey) ?? '{}';
-      final Map<String, dynamic> resultsMap = json.decode(cachedResults);
-      
-      if (resultsMap.containsKey(barcode)) {
-        return AnalysisResult.fromJson(resultsMap[barcode]);
+  AnalysisResult? _checkCache(String key) {
+    final cachedData = _prefs.getString(key);
+    if (cachedData != null) {
+      try {
+        return AnalysisResult.fromJson(json.decode(cachedData));
+      } catch (e) {
+        _prefs.remove(key); // Remove invalid cache entry
+        return null;
       }
-    } catch (e) {
-      print('Error retrieving cached analysis: $e');
     }
     return null;
   }
   
-  void _cacheAnalysisResult(String barcode, AnalysisResult result) {
-    try {
-      final cachedResults = _prefs.getString(_cachedAnalysisKey) ?? '{}';
-      final Map<String, dynamic> resultsMap = json.decode(cachedResults);
-      
-      resultsMap[barcode] = result.toJson();
-      _prefs.setString(_cachedAnalysisKey, json.encode(resultsMap));
-    } catch (e) {
-      print('Error caching analysis: $e');
-    }
+  void _cacheResult(String key, AnalysisResult result) {
+    _prefs.setString(key, json.encode(result.toJson()));
   }
   
   String _buildProductAnalysisPrompt({
@@ -192,31 +165,14 @@ USER PREFERENCES:
 - Health goals: ${goals.join(', ')}
 - Trying to avoid: ${avoid.join(', ')}
 
-IMPORTANT ANALYSIS GUIDELINES:
-1. When evaluating products containing sugar for users with heart disease or diabetes:
-   - Compare to daily recommended intake (25g/day for women, 36g/day for men)
-   - Consider serving size and realistic consumption amount
-   - Only mark as "not safe" if the product would significantly exceed daily recommended intake
-   - Provide context about moderation rather than absolute avoidance
-
-2. For all ingredients that users are trying to avoid:
-   - Consider the quantity and concentration in the product
-   - Evaluate based on recommended daily limits, not mere presence
-   - Suggest moderation rather than complete avoidance when appropriate
-
-3. Focus on practical nutrition advice that acknowledges:
-   - Occasional consumption may be acceptable for most ingredients
-   - The overall dietary pattern matters more than individual products
-   - Health conditions require moderation, not necessarily elimination
-
 Please provide a JSON response with the following structure:
 {
   "compatibility": "good", // Can be "good", "moderate", or "poor"
-  "explanation": "A nuanced explanation of the compatibility assessment",
-  "isSafeForUser": true, // Boolean indicating if this product is safe in moderation
-  "safetyReason": "Context-aware explanation about safety in appropriate amounts",
+  "explanation": "A brief explanation of the compatibility assessment",
+  "isSafeForUser": true, // Explicit boolean indicating if this product is safe for the user
+  "safetyReason": "Clear explanation why this product is safe or unsafe for this specific user",
   "recommendations": ["List of recommendations or alternatives"],
-  "healthInsights": ["Balanced insights about this product"],
+  "healthInsights": ["List of health insights about this product"],
   "nutritionalValues": {
     "energy": 250, // Estimated calorie value per 100g in kcal
     "sugars": 12.5, // Estimated sugar content per 100g in grams
@@ -227,30 +183,24 @@ Please provide a JSON response with the following structure:
     "carbs": 30, // Estimated carbohydrate content per 100g in grams
     "fiber": 1.2 // Estimated fiber content per 100g in grams
   },
-  "servingSizeInfo": {
-    "servingSize": "30g", // Typical serving size if available
-    "servingsPerContainer": 10, // Number of servings if available
-    "sugarPerServing": 3.75, // Sugar per typical serving in grams
-    "percentOfDailyRecommended": 15 // Percent of recommended daily intake per serving
-  },
   "alternatives": [
     {
       "name": "Specific product name as alternative",
       "reason": "Brief reason why this is a better alternative",
       "nutritionalBenefits": "Key nutritional advantages",
-      "imageUrl": null
+      "imageUrl": "https://example.com/product-image.jpg" // URL to product image if available
     }
   ]
 }
 
-FOR SUGAR CONTENT EVALUATION:
-- If a product contains 15g sugar per 100g, but a typical serving is 30g, then one serving provides only 4.5g sugar
-- This would be 18% of a woman's and 12.5% of a man's recommended daily limit
-- Such a product should NOT be classified as "unsafe" for heart disease patients when consumed in normal portions
-- Instead, note that moderate consumption is acceptable while suggesting lower-sugar alternatives
+Focus on how this product aligns with the user's specific health goals and preferences. 
+Base the "isSafeForUser" field on whether the product contains any allergens the user is avoiding, conflicts with their health goals, or contains ingredients they are trying to avoid.
+For the "nutritionalValues" section, provide your best estimates of the nutrient content based on the ingredients and any information provided. These values should be per 100g of the product and include clear units.
+Provide 2-3 actionable recommendations and health insights.
 
-Provide 2-3 actionable recommendations and balanced health insights.
-If suggesting alternatives, be specific with real product names that are commonly available.
+If the compatibility is "moderate" or "poor", always suggest 2-3 specific alternative products that would better align with the user's health goals. Be specific with real product names that are commonly available, not generic suggestions.
+
+For the alternative products, try to include an image URL if you know of a publicly available image of the product. The image URL should be a direct link to a product image. If you don't have a specific image URL, leave the imageUrl field empty or null.
 ''';
   }
   
@@ -423,19 +373,18 @@ If suggesting alternatives, be specific with real product names that are commonl
     String barcode,
     {bool forceFetch = false}
   ) async {
-    await _ensureInitialized();
-    
-    // Check for cached alternatives
-    final cachedAlternatives = _getCachedAlternatives(barcode);
-    if (cachedAlternatives != null) {
-      return cachedAlternatives;
-    }
-    
     // Get user preferences from SharedPreferences
     final userName = _prefs.getString('full_name') ?? 'User';
     final allergens = _prefs.getStringList('allergens') ?? [];
     final goals = _prefs.getStringList('goals') ?? [];
     final avoid = _prefs.getStringList('avoid') ?? [];
+    
+    // Check cache first unless force fetch is requested
+    final cacheKey = '${barcode}_alternatives';
+    if (!forceFetch) {
+      final cachedResult = _checkAlternativesCache(cacheKey);
+      if (cachedResult != null) return cachedResult;
+    }
     
     // Extract product information
     final productName = productData['product_name'] ?? 'Unknown Product';
@@ -461,7 +410,7 @@ If suggesting alternatives, be specific with real product names that are commonl
       final alternatives = await _fetchAlternativesFromGemini(prompt);
       
       // Cache the result
-      _cacheAlternatives(barcode, alternatives);
+      _cacheAlternatives(cacheKey, alternatives);
       
       return alternatives;
     } catch (e) {
@@ -479,31 +428,22 @@ If suggesting alternatives, be specific with real product names that are commonl
     }
   }
   
-  void _cacheAlternatives(String barcode, List<Map<String, dynamic>> alternatives) {
-    try {
-      final cachedAlternatives = _prefs.getString(_cachedAlternativesKey) ?? '{}';
-      final Map<String, dynamic> alternativesMap = json.decode(cachedAlternatives);
-      
-      alternativesMap[barcode] = alternatives;
-      _prefs.setString(_cachedAlternativesKey, json.encode(alternativesMap));
-    } catch (e) {
-      print('Error caching alternatives: $e');
-    }
-  }
-  
-  List<Map<String, dynamic>>? _getCachedAlternatives(String barcode) {
-    try {
-      final cachedAlternatives = _prefs.getString(_cachedAlternativesKey) ?? '{}';
-      final Map<String, dynamic> alternativesMap = json.decode(cachedAlternatives);
-      
-      if (alternativesMap.containsKey(barcode)) {
-        final List<dynamic> altList = alternativesMap[barcode];
-        return altList.cast<Map<String, dynamic>>();
+  List<Map<String, dynamic>>? _checkAlternativesCache(String key) {
+    final cachedData = _prefs.getString(key);
+    if (cachedData != null) {
+      try {
+        final List<dynamic> decoded = json.decode(cachedData);
+        return decoded.cast<Map<String, dynamic>>();
+      } catch (e) {
+        _prefs.remove(key); // Remove invalid cache entry
+        return null;
       }
-    } catch (e) {
-      print('Error retrieving cached alternatives: $e');
     }
     return null;
+  }
+  
+  void _cacheAlternatives(String key, List<Map<String, dynamic>> alternatives) {
+    _prefs.setString(key, json.encode(alternatives));
   }
   
   String _buildAlternativesPrompt({
