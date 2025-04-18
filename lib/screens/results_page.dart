@@ -70,6 +70,9 @@ class _ResultsPageState extends State<ResultsPage> {
     
     try {
       final geminiService = await _serviceProvider.getGeminiService();
+      
+      // Get analysis result - now the service will perform a quick check first
+      // and only call the API if needed for complex cases
       final result = await geminiService.analyzeProductForUser(
         productData, 
         widget.barcode
@@ -80,16 +83,44 @@ class _ResultsPageState extends State<ResultsPage> {
           _analysisResult = result;
           _isAnalyzing = false;
           _analysisExpanded = true;
+          
+          // If the result was obtained quickly, add a small delay for UI feedback
+          // This prevents the UI from flickering too quickly for the user to notice
+          if (result.explanation.contains("allergens") || result.explanation.contains("avoid")) {
+            Future.delayed(const Duration(milliseconds: 500), () {
+              if (mounted) {
+                setState(() {});
+              }
+            });
+          }
         });
       }
     } catch (e) {
       if (mounted) {
+        // Try to do a quick safety check locally if API fails
+        try {
+          final geminiService = await _serviceProvider.getGeminiService();
+          final quickResult = await geminiService.quickSafetyCheck(productData, widget.barcode);
+          
+          if (mounted) {
+            setState(() {
+              _analysisResult = quickResult;
+              _isAnalyzing = false;
+              _analysisExpanded = true;
+            });
+          }
+          return;
+        } catch (innerError) {
+          // If that also fails, show generic error
+          print('Both API and local safety check failed: $innerError');
+        }
+        
         setState(() {
           _analysisResult = AnalysisResult(
             isError: true,
             errorMessage: 'Analysis failed: ${e.toString()}',
             compatibility: 'unknown',
-            explanation: 'Could not complete analysis.',
+            explanation: 'Could not complete analysis. Check your internet connection.',
             recommendations: [],
             healthInsights: [],
           );
@@ -178,32 +209,43 @@ class _ResultsPageState extends State<ResultsPage> {
 
   void _saveToScanHistory(Map<String, dynamic> productData) async {
     try {
-      // Determine product safety
-      final bool hasAllergens = productData['allergens_tags'] != null && 
-                             (productData['allergens_tags'] as List).isNotEmpty;
+      // Use AI analysis for safety if available
+      bool isSafe = true;
+      String safetyReason = "";
       
-      // Check for user avoidance preferences
-      final bool hasAvoidedIngredients = _checkForAvoidedIngredients(productData);
+      if (_analysisResult != null) {
+        // Use the detailed analysis data from Gemini
+        isSafe = _analysisResult!.isSafeForUser;
+        safetyReason = _analysisResult!.safetyReason;
+      } else {
+        // Fallback to basic checks
+        final bool hasAllergens = productData['allergens_tags'] != null && 
+                               (productData['allergens_tags'] as List).isNotEmpty;
+        final bool hasAvoidedIngredients = _checkForAvoidedIngredients(productData);
+        
+        isSafe = !hasAllergens;
+        
+        if (hasAllergens) {
+          safetyReason = "Contains allergens";
+        } else if (hasAvoidedIngredients) {
+          safetyReason = "Contains ingredients you avoid";
+        } else {
+          safetyReason = "Safe for consumption";
+        }
+      }
       
       // Determine status
       ScanStatus status;
-      if (hasAllergens) {
+      if (!isSafe) {
         status = ScanStatus.danger;
-      } else if (hasAvoidedIngredients) {
+      } else if (!safetyReason.contains("Safe")) {
         status = ScanStatus.caution;
       } else {
         status = ScanStatus.safe;
       }
       
-      // Create description
-      String description = "";
-      if (hasAllergens) {
-        description = "Contains allergens";
-      } else if (hasAvoidedIngredients) {
-        description = "Contains ingredients you avoid";
-      } else {
-        description = "Safe for consumption";
-      }
+      // Use the safety reason as the description
+      String description = safetyReason;
       
       // Add nutrition info if available
       final nutriments = productData['nutriments'] ?? {};
@@ -300,11 +342,26 @@ class _ResultsPageState extends State<ResultsPage> {
             );
           } else if (snapshot.hasData) {
             final productData = snapshot.data!;
-            final bool hasAllergens = productData['allergens_tags'] != null && 
+            
+            // Initialize with basic check for UI rendering 
+            // (we'll get more detailed safety info from the analysis)
+            bool hasAllergens = productData['allergens_tags'] != null && 
                                (productData['allergens_tags'] as List).isNotEmpty;
-            final bool hasAvoidedIngredients = _checkForAvoidedIngredients(productData);
-            final bool isSafe = !hasAllergens; // Product is allergen-safe
-            final bool matchesPreferences = !hasAvoidedIngredients; // Product matches user preferences
+            bool hasAvoidedIngredients = _checkForAvoidedIngredients(productData);
+            bool isSafe = !hasAllergens; // Initial safety determination based on allergens
+            bool matchesPreferences = !hasAvoidedIngredients;
+            
+            // Get a more comprehensive safety determination if the initial check is uncertain
+            if (_analysisResult != null) {
+              // Use the detailed analysis result if already available
+              isSafe = _analysisResult!.isSafeForUser;
+            } else {
+              // If there's potential concern, start the analysis immediately
+              if (hasAllergens || hasAvoidedIngredients) {
+                // This will trigger the analysis in the background
+                _runAnalysis(productData);
+              }
+            }
             
             // Save to scan history
             _saveToScanHistory(productData);
@@ -652,15 +709,15 @@ class _ResultsPageState extends State<ResultsPage> {
                                               children: [
                                                 if (_isAnalyzing)
                                                   Padding(
-                                                    padding: const EdgeInsets.all(16.0),
+                        padding: const EdgeInsets.all(16.0),
                                                     child: Center(
-                                                      child: Column(
-                                                        children: [
+                        child: Column(
+                          children: [
                                                           CircularProgressIndicator(
                                                             strokeWidth: 3,
                                                             color: Colors.red.shade400,
                                                           ),
-                                                          const SizedBox(height: 16),
+                            const SizedBox(height: 16),
                                                           Text(
                                                             "Analyzing product with AI...",
                                                             style: TextStyle(
@@ -783,7 +840,7 @@ class _ResultsPageState extends State<ResultsPage> {
                                                                     Expanded(
                                                                       child: Text(
                                                                         _analysisResult!.recommendations[index],
-                                    style: const TextStyle(
+                                style: const TextStyle(
                                                                           fontSize: 13,
                                                                           height: 1.4,
                                                                         ),
@@ -806,7 +863,7 @@ class _ResultsPageState extends State<ResultsPage> {
                                                                 color: Colors.green.shade800,
                                                               ),
                                                             ),
-                                                            const SizedBox(height: 12),
+                            const SizedBox(height: 12),
                                                             Container(
                                                               height: 200,
                                                               margin: const EdgeInsets.only(bottom: 8),
@@ -846,11 +903,58 @@ class _ResultsPageState extends State<ResultsPage> {
                                                                     );
                                                                   } else {
                                                                     final alternatives = snapshot.data!;
+                                                                    // Filter alternatives to ensure only equal or better Nutri-Score is shown
+                                                                    final nutriScoreMap = {
+                                                                      'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5
+                                                                    };
+                                                                    
+                                                                    // Get original product's Nutri-Score
+                                                                    final originalNutriScore = 
+                                                                      (productData['nutriscore_grade'] ?? 'E').toString().toUpperCase();
+                                                                    
+                                                                    // Filter alternatives with better or equal Nutri-Score
+                                                                    final filteredAlternatives = alternatives.where((alt) {
+                                                                      final altNutriScore = (alt['nutriscore_grade'] ?? 'E').toString().toUpperCase();
+                                                                      
+                                                                      // If original is B, only show A
+                                                                      if (originalNutriScore == 'B' && altNutriScore != 'A') {
+                                                                        return false;
+                                                                      }
+                                                                      
+                                                                      // For other grades, ensure alternative is better or equal
+                                                                      final originalScore = nutriScoreMap[originalNutriScore] ?? 5;
+                                                                      final alternativeScore = nutriScoreMap[altNutriScore] ?? 5;
+                                                                      
+                                                                      return alternativeScore <= originalScore;
+                                                                    }).toList();
+                                                                    
+                                                                    // Show message if no suitable alternatives after filtering
+                                                                    if (filteredAlternatives.isEmpty) {
+                                                                      return Center(
+                                                                        child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                                                            Icon(Icons.info_outline, 
+                                                                              color: Colors.grey.shade400, size: 32),
+                                                                            const SizedBox(height: 12),
+                                Text(
+                                                                              "No better alternatives found for this product",
+                                  style: TextStyle(
+                                                                                color: Colors.grey.shade600,
+                                                                                fontSize: 13,
+                                                                                fontStyle: FontStyle.italic,
+                                                                              ),
+                                ),
+                              ],
+                            ),
+                                                                      );
+                                                                    }
+                                                                    
                                                                     return ListView.builder(
                                                                       scrollDirection: Axis.horizontal,
-                                                                      itemCount: alternatives.length,
+                                                                      itemCount: filteredAlternatives.length,
                                                                       itemBuilder: (context, index) {
-                                                                        final alternative = alternatives[index];
+                                                                        final alternative = filteredAlternatives[index];
                                                                         return Container(
                                                                           width: 160,
                                                                           margin: const EdgeInsets.only(right: 12),
@@ -908,7 +1012,7 @@ class _ResultsPageState extends State<ResultsPage> {
                                                                                 ),
                                                                               ),
                                                                               // Details with more padding without image
-                                                                              Padding(
+                              Padding(
                                                                                 padding: const EdgeInsets.all(12.0),
                                                                                 child: Column(
                                                                                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -925,8 +1029,8 @@ class _ResultsPageState extends State<ResultsPage> {
                                                                                     const SizedBox(height: 4),
                                                                                     Text(
                                                                                       alternative['product_name'] ?? 'Alternative Product',
-                                                                                      style: const TextStyle(
-                                                                                        fontSize: 14,
+                                    style: const TextStyle(
+                                        fontSize: 14,
                                                                                         fontWeight: FontWeight.bold,
                                                                                       ),
                                                                                       maxLines: 2,
@@ -942,10 +1046,10 @@ class _ResultsPageState extends State<ResultsPage> {
                                                                                       ),
                                                                                       maxLines: 4,
                                                                                       overflow: TextOverflow.ellipsis,
-                                                                                    ),
-                                                                                  ],
-                                                                                ),
-                                                                              ),
+                              ),
+                          ],
+                        ),
+                      ),
                                                                             ],
                                                                           ),
                                                                         );
@@ -2131,11 +2235,58 @@ class _ResultsPageState extends State<ResultsPage> {
                     );
                   } else {
                     final alternatives = snapshot.data!;
+                    // Filter alternatives to ensure only equal or better Nutri-Score is shown
+                    final nutriScoreMap = {
+                      'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5
+                    };
+                    
+                    // Get original product's Nutri-Score
+                    final originalNutriScore = 
+                      (productData['nutriscore_grade'] ?? 'E').toString().toUpperCase();
+                    
+                    // Filter alternatives with better or equal Nutri-Score
+                    final filteredAlternatives = alternatives.where((alt) {
+                      final altNutriScore = (alt['nutriscore_grade'] ?? 'E').toString().toUpperCase();
+                      
+                      // If original is B, only show A
+                      if (originalNutriScore == 'B' && altNutriScore != 'A') {
+                        return false;
+                      }
+                      
+                      // For other grades, ensure alternative is better or equal
+                      final originalScore = nutriScoreMap[originalNutriScore] ?? 5;
+                      final alternativeScore = nutriScoreMap[altNutriScore] ?? 5;
+                      
+                      return alternativeScore <= originalScore;
+                    }).toList();
+                    
+                    // Show message if no suitable alternatives after filtering
+                    if (filteredAlternatives.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.info_outline, 
+                              color: Colors.grey.shade400, size: 32),
+                            const SizedBox(height: 12),
+                            Text(
+                              "No better alternatives found for this product",
+                              style: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 13,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+                    
                     return ListView.builder(
                       scrollDirection: Axis.horizontal,
-                      itemCount: alternatives.length,
+                      itemCount: filteredAlternatives.length,
                       itemBuilder: (context, index) {
-                        final alternative = alternatives[index];
+                        final alternative = filteredAlternatives[index];
                         return Container(
                           width: 160,
                           margin: const EdgeInsets.only(right: 12),

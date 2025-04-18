@@ -61,6 +61,28 @@ class GeminiService {
     Map<String, dynamic> productData, 
     String barcode
   ) async {
+    // Check cache first (invalidate cache if profile was updated recently)
+    final profileUpdateTime = _prefs.getInt('profile_last_updated') ?? 0;
+    final cacheTime = _prefs.getInt('${barcode}_analysis_time') ?? 0;
+    
+    final cacheKey = '${barcode}_analysis';
+    final cachedResult = (profileUpdateTime > cacheTime) ? null : _checkCache(cacheKey);
+    if (cachedResult != null) return cachedResult;
+    
+    // Try quick safety check for common cases before calling the API
+    // This can handle most allergen and basic avoidance checks without API call
+    final quickCheck = await quickSafetyCheck(productData, barcode);
+    
+    // If safety is clearly determined by quick check, use that result
+    if (quickCheck.isSafeForUser == false || 
+        (quickCheck.isSafeForUser == true && quickCheck.compatibility == 'good')) {
+      // Cache the quick check result
+      _cacheResult(cacheKey, quickCheck);
+      _prefs.setInt('${barcode}_analysis_time', DateTime.now().millisecondsSinceEpoch);
+      return quickCheck;
+    }
+    
+    // For more complex cases, proceed with full AI analysis
     // Get comprehensive user preferences from SharedPreferences
     final userName = _prefs.getString('full_name') ?? 'User';
     
@@ -76,16 +98,7 @@ class GeminiService {
     final allergenPrefs = _prefs.getStringList('pref_Allergens') ?? [];
     
     // Get health issues to consider
-    final healthIssues = _prefs.getStringList('pref_Health Issues') ?? [];
-    
-    // Check cache first (invalidate cache if profile was updated recently)
-    final profileUpdateTime = _prefs.getInt('profile_last_updated') ?? 0;
-    final currentCache = _prefs.getString('${barcode}_analysis');
-    final cacheTime = _prefs.getInt('${barcode}_analysis_time') ?? 0;
-    
-    final cacheKey = '${barcode}_analysis';
-    final cachedResult = (profileUpdateTime > cacheTime) ? null : _checkCache(cacheKey);
-    if (cachedResult != null) return cachedResult;
+    final healthIssues = _prefs.getStringList('health_issues') ?? [];
     
     // Extract product information
     final productName = productData['product_name'] ?? 'Unknown Product';
@@ -146,14 +159,9 @@ class GeminiService {
       return analysisResult;
     } catch (e) {
       print('Gemini API Error: $e'); // Add debugging info
-      return AnalysisResult(
-        isError: true,
-        errorMessage: 'Could not analyze this product: ${e.toString()}',
-        compatibility: 'unknown',
-        explanation: 'An error occurred while analyzing this product.',
-        recommendations: [],
-        healthInsights: [],
-      );
+      
+      // Fall back to quick check result if API fails
+      return quickCheck;
     }
   }
   
@@ -318,6 +326,13 @@ For the "nutritionalValues" section, use the provided values rather than estimat
 Provide 2-3 actionable recommendations and health insights, personalized to the user's specific health profile.
 
 If the compatibility is "moderate" or "poor", always suggest 2-3 specific alternative products that would better align with the user's health profile.
+
+IMPORTANT REGARDING ALTERNATIVE PRODUCTS AND NUTRI-SCORE:
+- Always recommend alternatives with EQUAL OR BETTER Nutri-Score than the original product
+- For a product with Nutri-Score B, only suggest alternatives with Nutri-Score A
+- For a product with Nutri-Score C, only suggest alternatives with Nutri-Score A or B
+- For a product with Nutri-Score D or E, suggest alternatives with any better Nutri-Score
+- Never suggest alternatives with worse Nutri-Score than the original product
 ''';
   }
   
@@ -700,6 +715,14 @@ Focus on providing alternatives that specifically address this user's health pro
 5. If the user prefers certain processing levels, suggest alternatives with appropriate NOVA scores
 6. If the user has specific nutritional preferences (like high protein), ensure alternatives match these criteria
 
+// Modified instruction for Nutri-Score improvement
+IMPORTANT REGARDING NUTRI-SCORE:
+- Always recommend alternatives with EQUAL OR BETTER Nutri-Score than the original product
+- If the original product has Nutri-Score B, recommend ONLY products with Nutri-Score A
+- If the original product has Nutri-Score C, recommend ONLY products with Nutri-Score A or B
+- If the original product has Nutri-Score D or E, recommend products with any better Nutri-Score
+- Never suggest alternatives with worse Nutri-Score than the original product
+
 Each alternative MUST be:
 - A real product with a specific brand and name (not generic suggestions)
 - Available in the same general category as the original product
@@ -763,6 +786,128 @@ Each alternative MUST be:
       print('Exception in _fetchAlternativesFromGemini: $e');
       throw Exception('Error fetching alternatives: $e');
     }
+  }
+
+  // Add this new method after the analyzeProductForUser method
+  Future<AnalysisResult> quickSafetyCheck(
+    Map<String, dynamic> productData, 
+    String barcode
+  ) async {
+    // Get user preferences that are relevant to safety
+    final userName = _prefs.getString('full_name') ?? 'User';
+    final avoid = _prefs.getStringList('avoid') ?? [];
+    final allergenPrefs = _prefs.getStringList('pref_Allergens') ?? [];
+    final healthIssues = _prefs.getStringList('health_issues') ?? [];
+    
+    // Extract product information
+    final productName = productData['product_name'] ?? 'Unknown Product';
+    final ingredients = productData['ingredients_text']?.toLowerCase() ?? '';
+    final allergens = productData['allergens_tags'] ?? [];
+    
+    // Format allergens for better comparison
+    final formattedAllergens = allergens.map((allergen) {
+      if (allergen is String && allergen.contains(':')) {
+        return allergen.split(':').last.toLowerCase();
+      }
+      return allergen.toString().toLowerCase();
+    }).toList();
+    
+    // Check for allergens the user is avoiding
+    bool hasAllergenConcern = false;
+    List<String> matchedAllergens = [];
+    
+    for (var allergenPref in allergenPrefs) {
+      // Convert allergen preference format (e.g., "Dairy-free" to "dairy")
+      String allergenName = allergenPref.toLowerCase();
+      if (allergenName.endsWith('-free')) {
+        allergenName = allergenName.substring(0, allergenName.length - 5);
+      }
+      
+      // Check if this allergen is in the product
+      if (formattedAllergens.any((a) => a.contains(allergenName))) {
+        hasAllergenConcern = true;
+        matchedAllergens.add(allergenName);
+      }
+    }
+    
+    // Check for ingredients the user is avoiding
+    bool hasAvoidedIngredients = false;
+    List<String> matchedIngredients = [];
+    
+    for (var item in avoid) {
+      if (ingredients.contains(item.toLowerCase())) {
+        hasAvoidedIngredients = true;
+        matchedIngredients.add(item);
+      }
+    }
+    
+    // Quick safety determination
+    if (hasAllergenConcern) {
+      return AnalysisResult(
+        isError: false,
+        errorMessage: '',
+        compatibility: 'poor',
+        explanation: 'This product contains allergens you should avoid: ${matchedAllergens.join(", ")}.',
+        recommendations: [
+          'Avoid this product due to allergen concerns.',
+          'Look for products specifically labeled as free from ${matchedAllergens.join(", ")}.'
+        ],
+        healthInsights: [
+          'Products containing ${matchedAllergens.join(", ")} may cause allergic reactions based on your profile.'
+        ],
+        isSafeForUser: false,
+        safetyReason: 'Contains allergens you need to avoid: ${matchedAllergens.join(", ")}',
+      );
+    }
+    
+    if (hasAvoidedIngredients && healthIssues.isNotEmpty) {
+      // If user has health issues and product has ingredients they're avoiding, it's potentially unsafe
+      return AnalysisResult(
+        isError: false,
+        errorMessage: '',
+        compatibility: 'moderate',
+        explanation: 'This product contains ingredients you prefer to avoid: ${matchedIngredients.join(", ")}.',
+        recommendations: [
+          'Consider alternatives without ${matchedIngredients.join(", ")}.',
+          'Check with your healthcare provider if you have concerns about these ingredients.'
+        ],
+        healthInsights: [
+          'Given your health profile, limiting ${matchedIngredients.join(", ")} intake may be beneficial.'
+        ],
+        isSafeForUser: false,
+        safetyReason: 'Contains ingredients that may impact your health conditions: ${matchedIngredients.join(", ")}',
+      );
+    }
+    
+    if (hasAvoidedIngredients) {
+      // If product only has ingredients they're avoiding (but no health issues), it's safe but not preferred
+      return AnalysisResult(
+        isError: false,
+        errorMessage: '',
+        compatibility: 'moderate',
+        explanation: 'This product contains ingredients you prefer to avoid: ${matchedIngredients.join(", ")}.',
+        recommendations: [
+          'Consider alternatives without ${matchedIngredients.join(", ")} if available.'
+        ],
+        healthInsights: [
+          'While not unsafe, reducing ${matchedIngredients.join(", ")} intake aligns with your preferences.'
+        ],
+        isSafeForUser: true,
+        safetyReason: 'Safe but contains ingredients you prefer to avoid',
+      );
+    }
+    
+    // If we reached here, it's a simple "safe" case
+    return AnalysisResult(
+      isError: false,
+      errorMessage: '',
+      compatibility: 'good',
+      explanation: 'This product appears to be compatible with your dietary preferences and health needs.',
+      recommendations: ['This product is a good match for your profile.'],
+      healthInsights: ['No concerning ingredients or allergens detected based on your profile.'],
+      isSafeForUser: true,
+      safetyReason: 'No allergens or concerning ingredients detected',
+    );
   }
 }
 

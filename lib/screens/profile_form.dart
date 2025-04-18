@@ -21,20 +21,13 @@ class _ProfileFormState extends State<ProfileForm> {
     "Heart Disease",
     "High Blood Pressure",
     "High Cholesterol",
-    "Type 2 Diabetes",
+    "Diabetes",
     "Obesity",
-    "Irritable Bowel Syndrome (IBS)",
-    "Acid Reflux",
-    "Food Allergies",
-    "Fatty Liver",
-    "Kidney Stones",
+    "Kidney Issues",
   ];
 
   final Map<String, List<String>> preferenceSections = {
-    "Nutrition": ["High nutrition score", "Low salt", "Low sugar", "Low fat", "Low saturated fat"],
     "Ingredients": ["Vegan", "Vegetarian", "Palm oil free"],
-    "Processing": ["Minimally processed", "Few or no additives"],
-    "Labels": ["Organic", "Fair trade"],
     "Allergens": [
       "Gluten-free", "Dairy-free", "Egg-free", "Nut-free", "Peanut-free", "Sesame-free", "Soy-free",
       "Celery-free", "Mustard-free", "Lupin-free", "Fish-free", "Shellfish-free", "Mollusc-free", "Sulfite-free"
@@ -70,30 +63,29 @@ class _ProfileFormState extends State<ProfileForm> {
   void handleSubmit() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     
-    // Save user profile data
+    // Save basic profile data
     await prefs.setString('full_name', nameController.text);
     await prefs.setStringList('goals', goals);
     await prefs.setStringList('avoid', avoidItems);
     
-    // Save health issues separately (this is different from the avoid list)
+    // Extract health issues that were selected
     List<String> selectedHealthIssues = [];
     for (String issue in healthIssues) {
       if (avoidItems.contains(issue)) {
         selectedHealthIssues.add(issue);
       }
     }
+    // Save health issues explicitly for the quickSafetyCheck method
     await prefs.setStringList('health_issues', selectedHealthIssues);
     
-    // Save all preference selections
+    // Save other preference selections
     for (var entry in preferenceSelections.entries) {
       await prefs.setStringList('pref_${entry.key}', entry.value);
     }
     
     // Set timestamp for when profile was last updated
-    // This will be used to invalidate caches for product analysis and alternatives
     await prefs.setInt('profile_last_updated', DateTime.now().millisecondsSinceEpoch);
     
-    // Navigate to home screen
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
   }
 
@@ -156,8 +148,7 @@ class _ProfileFormState extends State<ProfileForm> {
                       children: [
                         chip("Salt", avoidItems),
                         chip("Sugar", avoidItems),
-                        chip("Caffeine", avoidItems),
-                        chip("Processed Foods", avoidItems),
+                        chip("Milk", avoidItems),
                       ],
                     )),
                     ...preferenceSections.entries.map((entry) {
