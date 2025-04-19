@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../api/api_service.dart';
 import '../models/analysis_result.dart';
 import '../models/product_scan.dart';
@@ -20,6 +23,7 @@ class ResultsPage extends StatefulWidget {
 class _ResultsPageState extends State<ResultsPage> {
   late Future<Map<String, dynamic>> _productData;
   final FlutterTts _flutterTts = FlutterTts();
+  bool _isSpeaking = false;
   
   // User preferences (these would normally come from a user profile service)
   final List<String> _userAvoidancePreferences = ['salt', 'sugar', 'palm oil']; // Example preferences
@@ -29,11 +33,18 @@ class _ResultsPageState extends State<ResultsPage> {
   bool _analysisExpanded = false;
   AnalysisResult? _analysisResult;
   final ServiceProvider _serviceProvider = ServiceProvider();
+  
+  // For favorite functionality
+  bool _isFavorite = false;
+  static const String _favoritesKey = 'favorite_products';
 
   @override
   void initState() {
     super.initState();
     _productData = ApiService.getProductInfo(widget.barcode);
+    _checkIfFavorite();
+    _initTts();
+    
     // Set up listener to run analysis for unsafe products
     _productData.then((data) {
       final bool hasAllergens = data['allergens_tags'] != null && 
@@ -50,11 +61,241 @@ class _ResultsPageState extends State<ResultsPage> {
       // Handle error
     });
   }
-
-  void _speak(String text) async {
-    await _flutterTts.speak(text);
+  
+  @override
+  void dispose() {
+    _flutterTts.stop();
+    super.dispose();
   }
   
+  Future<void> _initTts() async {
+    await _flutterTts.setLanguage("en-US");
+    await _flutterTts.setSpeechRate(0.5);
+    await _flutterTts.setVolume(1.0);
+    await _flutterTts.setPitch(1.0);
+    
+    _flutterTts.setCompletionHandler(() {
+      setState(() {
+        _isSpeaking = false;
+      });
+    });
+  }
+
+  Future<void> _speak(Map<String, dynamic> productData) async {
+    if (_isSpeaking) {
+      await _flutterTts.stop();
+      setState(() {
+        _isSpeaking = false;
+      });
+      return;
+    }
+    
+    setState(() {
+      _isSpeaking = true;
+    });
+    
+    String speechText = _generateProductSpeechText(productData);
+    await _flutterTts.speak(speechText);
+  }
+  
+  String _generateProductSpeechText(Map<String, dynamic> productData) {
+    final StringBuffer speechText = StringBuffer();
+    
+    // Basic product information
+    final String productName = productData['product_name'] ?? 'Unknown Product';
+    final String brand = productData['brands'] ?? '';
+    final String quantity = productData['quantity'] ?? '';
+    
+    speechText.write('Product information for $productName');
+    if (brand.isNotEmpty) {
+      speechText.write(' by $brand');
+    }
+    if (quantity.isNotEmpty) {
+      speechText.write(', $quantity');
+    }
+    speechText.write('.\n\n');
+    
+    // Product categories and origin
+    final String categories = productData['categories'] ?? '';
+    final String origin = productData['countries'] ?? '';
+    
+    if (categories.isNotEmpty) {
+      speechText.write('This product belongs to the following categories: $categories.\n');
+    }
+    if (origin.isNotEmpty) {
+      speechText.write('Origin: $origin.\n');
+    }
+    
+    // Nutri-Score and Nova score
+    final String nutriScore = productData['nutriscore_grade']?.toString().toUpperCase() ?? '';
+    if (nutriScore.isNotEmpty) {
+      speechText.write('Nutri-Score: $nutriScore. ');
+      
+      switch (nutriScore.toUpperCase()) {
+        case 'A':
+          speechText.write('This is an excellent nutritional choice.');
+          break;
+        case 'B':
+          speechText.write('This is a good nutritional choice.');
+          break;
+        case 'C':
+          speechText.write('This product has average nutritional quality.');
+          break;
+        case 'D':
+          speechText.write('This product has poor nutritional quality.');
+          break;
+        case 'E':
+          speechText.write('This product has very poor nutritional quality.');
+          break;
+      }
+      speechText.write('\n');
+    }
+
+    final String novaScore = productData['nova_group']?.toString() ?? '';
+    if (novaScore.isNotEmpty) {
+      speechText.write('Food processing classification: Nova group $novaScore. ');
+      
+      switch (novaScore) {
+        case '1':
+          speechText.write('This is unprocessed or minimally processed food.');
+          break;
+        case '2':
+          speechText.write('This contains processed culinary ingredients.');
+          break;
+        case '3':
+          speechText.write('This is processed food.');
+          break;
+        case '4':
+          speechText.write('This is ultra-processed food.');
+          break;
+      }
+      speechText.write('\n');
+    }
+    
+    // Health safety information
+    bool isSafe = true;
+    if (_analysisResult != null && !_analysisResult!.isError) {
+      isSafe = _analysisResult!.isSafeForUser;
+      
+      if (isSafe) {
+        speechText.write('According to our analysis, this product is safe for you.\n');
+        
+        // Include compatibility information
+        if (_analysisResult!.compatibility.isNotEmpty) {
+          String compatibility = _analysisResult!.compatibility;
+          speechText.write('Compatibility with your health profile: $compatibility. ');
+          
+          if (compatibility == 'good') {
+            speechText.write('This product aligns well with your health goals and preferences.');
+          } else if (compatibility == 'moderate') {
+            speechText.write('This product is acceptable but there may be better alternatives for your needs.');
+          } else if (compatibility == 'poor') {
+            speechText.write('This product does not align well with your health goals or preferences.');
+          }
+          speechText.write('\n');
+        }
+        
+        // Include health insights
+        if (_analysisResult!.healthInsights.isNotEmpty) {
+          speechText.write('Health insights: ${_analysisResult!.healthInsights.join('. ')}.\n');
+        }
+      } else {
+        speechText.write('According to our analysis, this product may not be safe for you. ');
+        speechText.write('${_analysisResult!.safetyReason}\n');
+        speechText.write('${_analysisResult!.explanation}\n');
+        
+        if (_analysisResult!.recommendations.isNotEmpty) {
+          speechText.write('Recommendations: ${_analysisResult!.recommendations.join('. ')}.\n');
+        }
+        
+        // Mention alternatives if available
+        if (_analysisResult!.alternatives.isNotEmpty) {
+          speechText.write('We have found some alternatives that might be better for you. ');
+          speechText.write('Please check the screen for details.\n');
+        }
+      }
+    } else {
+      // Basic allergy check
+      final hasAllergens = productData['allergens_tags'] != null && 
+                         (productData['allergens_tags'] as List).isNotEmpty;
+      
+      if (hasAllergens) {
+        speechText.write('Warning: This product contains allergens. ');
+        
+        // List the allergens
+        final allergens = productData['allergens_tags'] as List;
+        if (allergens.isNotEmpty) {
+          speechText.write('Allergens include: ');
+          List<String> formattedAllergens = [];
+          
+          for (var allergen in allergens) {
+            String name = allergen.toString().split(':').last.replaceAll('-', ' ');
+            formattedAllergens.add(name);
+          }
+          
+          speechText.write('${formattedAllergens.join(', ')}.\n');
+        }
+        
+        isSafe = false;
+      }
+      
+      // Check for avoided ingredients
+      final hasAvoidedIngredients = _checkForAvoidedIngredients(productData);
+      if (hasAvoidedIngredients) {
+        speechText.write('This product contains ingredients you prefer to avoid, such as high levels of salt, sugar, or palm oil.\n');
+      }
+    }
+    
+    // Ingredients
+    final String ingredients = productData['ingredients_text'] ?? '';
+    if (ingredients.isNotEmpty && ingredients.length < 200) {
+      speechText.write('\nIngredients: $ingredients\n');
+    } else if (ingredients.isNotEmpty) {
+      speechText.write('\nThis product contains multiple ingredients. Please check the screen for the full list.\n');
+    }
+    
+    // Basic nutrition facts
+    final Map<String, dynamic> nutriments = productData['nutriments'] ?? {};
+    if (nutriments.isNotEmpty) {
+      speechText.write('\nKey nutrition facts per 100 grams: ');
+      
+      if (nutriments['energy-kcal_100g'] != null) {
+        speechText.write('${nutriments['energy-kcal_100g']?.toStringAsFixed(0) ?? '0'} calories, ');
+      }
+      
+      if (nutriments['fat_100g'] != null) {
+        speechText.write('${nutriments['fat_100g']?.toStringAsFixed(1) ?? '0'} grams of fat, ');
+      }
+      
+      if (nutriments['carbohydrates_100g'] != null) {
+        speechText.write('${nutriments['carbohydrates_100g']?.toStringAsFixed(1) ?? '0'} grams of carbohydrates, ');
+      }
+      
+      if (nutriments['sugars_100g'] != null) {
+        speechText.write('${nutriments['sugars_100g']?.toStringAsFixed(1) ?? '0'} grams of sugar, ');
+      }
+      
+      if (nutriments['proteins_100g'] != null) {
+        speechText.write('${nutriments['proteins_100g']?.toStringAsFixed(1) ?? '0'} grams of protein, ');
+      }
+      
+      if (nutriments['salt_100g'] != null) {
+        speechText.write('${nutriments['salt_100g']?.toStringAsFixed(2) ?? '0'} grams of salt.');
+      }
+      
+      speechText.write('\n');
+    }
+    
+    // Wrap up
+    if (!isSafe) {
+      speechText.write('\nPlease review the detailed information on screen for more specific health concerns.');
+    } else {
+      speechText.write('\nTap the button again to stop this voice explanation.');
+    }
+    
+    return speechText.toString();
+  }
+
   Future<void> _runAnalysis(Map<String, dynamic> productData) async {
     if (_analysisResult != null) {
       // Already have an analysis, just toggle expanded state
@@ -207,64 +448,48 @@ class _ResultsPageState extends State<ResultsPage> {
     }
   }
 
-  void _saveToScanHistory(Map<String, dynamic> productData) async {
+  // Save to scan history for easy access later
+  Future<void> _saveToScanHistory(Map<String, dynamic> productData) async {
     try {
-      // Use AI analysis for safety if available
-      bool isSafe = true;
-      String safetyReason = "";
+      // Extract necessary data for scan history
+      final String productName = productData['product_name'] ?? 'Unknown Product';
+      final String description = productData['brands'] ?? '';
       
+      // Get the product image directly from the API data
+      String imageUrl = '';
+      if (productData['image_url'] != null) {
+        imageUrl = productData['image_url'];
+      } else if (productData['image_front_url'] != null) {
+        imageUrl = productData['image_front_url'];
+      } else if (productData['image_small_url'] != null) {
+        imageUrl = productData['image_small_url'];
+      }
+      
+      // Determine product safety status
+      ScanStatus status = ScanStatus.caution;
       if (_analysisResult != null) {
-        // Use the detailed analysis data from Gemini
-        isSafe = _analysisResult!.isSafeForUser;
-        safetyReason = _analysisResult!.safetyReason;
+        status = _analysisResult!.isSafeForUser ? ScanStatus.safe : ScanStatus.danger;
       } else {
-        // Fallback to basic checks
+        // Basic determination based on allergens if analysis not done
         final bool hasAllergens = productData['allergens_tags'] != null && 
                                (productData['allergens_tags'] as List).isNotEmpty;
         final bool hasAvoidedIngredients = _checkForAvoidedIngredients(productData);
         
-        isSafe = !hasAllergens;
-        
         if (hasAllergens) {
-          safetyReason = "Contains allergens";
+          status = ScanStatus.danger;
         } else if (hasAvoidedIngredients) {
-          safetyReason = "Contains ingredients you avoid";
+          status = ScanStatus.caution;
         } else {
-          safetyReason = "Safe for consumption";
+          status = ScanStatus.safe;
         }
       }
       
-      // Determine status
-      ScanStatus status;
-      if (!isSafe) {
-        status = ScanStatus.danger;
-      } else if (!safetyReason.contains("Safe")) {
-        status = ScanStatus.caution;
-      } else {
-        status = ScanStatus.safe;
-      }
-      
-      // Use the safety reason as the description
-      String description = safetyReason;
-      
-      // Add nutrition info if available
-      final nutriments = productData['nutriments'] ?? {};
-      if (nutriments.isNotEmpty) {
-        String nutriInfo = "";
-        if (nutriments['energy-kcal_100g'] != null) {
-          nutriInfo += "${nutriments['energy-kcal_100g']?.toStringAsFixed(0) ?? '?'} kcal";
-        }
-        if (nutriInfo.isNotEmpty) {
-          description += " • $nutriInfo";
-        }
-      }
-      
-      // Create the product scan
-      final ProductScan scan = ProductScan(
-        name: productData['product_name'] ?? "Unknown Product",
+      // Create ProductScan object
+      final scan = ProductScan(
+        name: productName,
         status: status,
         description: description,
-        imagePath: "assets/images/placeholder.png", // Use a default placeholder
+        imagePath: imageUrl, // Use only the API image URL
         scanDate: DateTime.now(),
         barcode: widget.barcode,
       );
@@ -272,7 +497,145 @@ class _ResultsPageState extends State<ResultsPage> {
       // Save to history
       await ScanHistoryService.saveProductScan(scan);
     } catch (e) {
-      print('Error saving scan to history: $e');
+      print('Error saving to scan history: $e');
+    }
+  }
+
+  // Check if product is in favorites
+  Future<void> _checkIfFavorite() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final favoriteProducts = prefs.getStringList(_favoritesKey) ?? [];
+      
+      setState(() {
+        _isFavorite = favoriteProducts.contains(widget.barcode);
+      });
+    } catch (e) {
+      print('Error checking favorites: $e');
+    }
+  }
+  
+  // Toggle favorite status
+  Future<void> _toggleFavorite() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final favoriteProducts = prefs.getStringList(_favoritesKey) ?? [];
+      
+      setState(() {
+        if (_isFavorite) {
+          // Remove from favorites
+          favoriteProducts.remove(widget.barcode);
+          _isFavorite = false;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Removed from favorites'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        } else {
+          // Add to favorites
+          favoriteProducts.add(widget.barcode);
+          _isFavorite = true;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Added to favorites'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      });
+      
+      // Save updated list
+      await prefs.setStringList(_favoritesKey, favoriteProducts);
+    } catch (e) {
+      print('Error updating favorites: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to update favorites'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
+  // Share product information using clipboard and a snackbar
+  Future<void> _shareProduct(Map<String, dynamic> productData) async {
+    try {
+      final String productName = productData['product_name'] ?? 'Unknown Product';
+      final String brand = productData['brands'] ?? '';
+      
+      // Create text to share
+      String shareText = 'Check out this product: $productName';
+      if (brand.isNotEmpty) {
+        shareText += ' by $brand';
+      }
+      
+      shareText += '\nBarcode: ${widget.barcode}';
+      shareText += '\n\nScanned with HealthyChoice app';
+      
+      // Copy to clipboard
+      await Clipboard.setData(ClipboardData(text: shareText));
+      
+      // Show successful copy message
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('Copied to clipboard!', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const Text('Paste in your messaging app to share', style: TextStyle(fontSize: 12)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 3),
+          action: SnackBarAction(
+            label: 'OPEN WHATSAPP',
+            textColor: Colors.white,
+            onPressed: () {
+              _openWhatsApp(shareText);
+            },
+          ),
+        ),
+      );
+    } catch (e) {
+      print('Error preparing share: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error copying to clipboard. Please try again.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
+  Future<void> _openWhatsApp(String text) async {
+    try {
+      final encodedText = Uri.encodeComponent(text);
+      final whatsappUrl = Uri.parse('https://wa.me/?text=$encodedText');
+      
+      if (await canLaunchUrl(whatsappUrl)) {
+        await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
+      } else {
+        throw 'Could not launch WhatsApp';
+      }
+    } catch (e) {
+      print('Error opening WhatsApp: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not open WhatsApp. Text is copied to clipboard.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
     }
   }
 
@@ -366,728 +729,308 @@ class _ResultsPageState extends State<ResultsPage> {
             // Save to scan history
             _saveToScanHistory(productData);
 
-          return SafeArea(
+            return SafeArea(
               child: CustomScrollView(
                 slivers: [
+                  // Header with gradient (fixed height)
                   SliverToBoxAdapter(
-                    child: Column(
-                      children: [
-                        // Using Stack layout instead of negative margins
-                        Container(
-                          height: 200,
-                          child: Stack(
-                            clipBehavior: Clip.none,
-                            children: [
-                              // Header with gradient
-                              Container(
-                                height: 160,
-                                width: double.infinity,
-                                decoration: const BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    colors: [Color(0xFF4CAF50), Color(0xFF8BC34A)],
-                                  ),
-                                ),
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                                      // App Bar
-                    Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                                          GestureDetector(
-                                            onTap: () => Navigator.pop(context),
-                                            child: Container(
-                                              padding: const EdgeInsets.all(8),
-                                              decoration: BoxDecoration(
-                                                color: Colors.white,
-                                                borderRadius: BorderRadius.circular(8),
-                                                boxShadow: [
-                                                  BoxShadow(
-                                                    color: Colors.black.withOpacity(0.1),
-                                                    blurRadius: 8,
-                                                  ),
-                                                ],
-                                              ),
-                                              child: const Icon(Icons.arrow_back, color: Colors.black),
-                                            ),
-                                          ),
-                                          const Text(
-                                            "Product Analysis",
-                            style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                          Row(
-                                            children: [
-                                              Container(
-                                                padding: const EdgeInsets.all(8),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.white,
-                                                  borderRadius: BorderRadius.circular(8),
-                                                  boxShadow: [
-                                                    BoxShadow(
-                                                      color: Colors.black.withOpacity(0.1),
-                                                      blurRadius: 8,
-                                                    ),
-                                                  ],
-                                                ),
-                                                child: const Icon(Icons.share, color: Colors.black),
-                                              ),
-                                              const SizedBox(width: 8),
-                    Container(
-                                                padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                                                  borderRadius: BorderRadius.circular(8),
-                        boxShadow: [
-                          BoxShadow(
-                                                      color: Colors.black.withOpacity(0.1),
-                                                      blurRadius: 8,
-                          ),
-                        ],
+                    child: Container(
+                      height: 110,
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [Color(0xFF4CAF50), Color(0xFF8BC34A)],
+                        ),
                       ),
-                                                child: const Icon(Icons.favorite_border, color: Colors.black),
-                                              ),
-                                            ],
-                                          ),
-                                        ],
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          GestureDetector(
+                            onTap: () => Navigator.pop(context),
+                            child: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(8),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.1),
+                                    blurRadius: 8,
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(Icons.arrow_back, color: Colors.black),
+                            ),
+                          ),
+                          const Text(
+                            "Product Analysis",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Row(
+                            children: [
+                              GestureDetector(
+                                onTap: () => _shareProduct(productData),
+                                child: Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(8),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withOpacity(0.1),
+                                        blurRadius: 8,
                                       ),
                                     ],
                                   ),
+                                  child: const Icon(Icons.copy, color: Colors.black),
                                 ),
                               ),
-                              
-                              // Product Card (positioned to overlap gradient)
-                              Positioned(
-                                top: 90,
-                                left: 16,
-                                right: 16,
+                              const SizedBox(width: 8),
+                              GestureDetector(
+                                onTap: _toggleFavorite,
                                 child: Container(
-                                  padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                                    borderRadius: BorderRadius.circular(16),
-                        boxShadow: [
-                          BoxShadow(
-                                        color: Colors.black.withOpacity(0.06),
-                                        blurRadius: 12,
-                                        offset: const Offset(0, 3),
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(8),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withOpacity(0.1),
+                                        blurRadius: 8,
+                                      ),
+                                    ],
+                                  ),
+                                  child: Icon(
+                                    _isFavorite ? Icons.favorite : Icons.favorite_border,
+                                    color: _isFavorite ? Colors.red : Colors.black,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
-                        child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                                      Row(
+                    ),
+                  ),
+                  
+                  // Product information in scrollable cards
+                  SliverList(
+                    delegate: SliverChildListDelegate([
+                      // Product Info Card
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: Card(
+                          elevation: 4,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: productData['image_url'] != null
+                                        ? Image.network(
+                                            productData['image_url']!,
+                                            width: 100,
+                                            height: 100,
+                                            fit: BoxFit.cover,
+                                            errorBuilder: (context, error, stackTrace) {
+                                              return _buildPlaceholderImage(100, 100);
+                                            },
+                                          )
+                                        : _buildPlaceholderImage(100, 100),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Expanded(
+                                      child: Column(
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
-                                          ClipRRect(
-                                            borderRadius: BorderRadius.circular(12),
-                                            child: productData['image_url'] != null
-                                              ? Image.network(
-                                                  productData['image_url']!,
-                                                  width: 100,
-                                                  height: 100,
-                                                  fit: BoxFit.cover,
-                                                  errorBuilder: (context, error, stackTrace) {
-                                                    return _buildPlaceholderImage(100, 100);
-                                                  },
-                                                )
-                                              : _buildPlaceholderImage(100, 100),
-                                          ),
-                                          const SizedBox(width: 16),
-                                          Expanded(
-                        child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
-                                              children: [
-                                                Wrap(
-                                                  spacing: 4, 
-                                                  runSpacing: 4,
-                                                  children: [
-                                                    if (productData['brands'] != null)
-                                                      Container(
-                                                        padding: const EdgeInsets.symmetric(
-                                                          horizontal: 8,
-                                                          vertical: 4,
-                                                        ),
-                                                        decoration: BoxDecoration(
-                                                          color: Colors.blue.shade100,
-                                                          borderRadius: BorderRadius.circular(8),
-                                                        ),
-                                                        child: Text(
-                                                          productData['brands']!,
-                                                          style: TextStyle(
-                                                            color: Colors.blue.shade800,
-                                                            fontSize: 12,
-                                                            fontWeight: FontWeight.w500,
-                                                          ),
-                                                          maxLines: 1,
-                                                          overflow: TextOverflow.ellipsis,
-                                                        ),
-                                                      ),
-                                                  ],
-                                                ),
-                                                const SizedBox(height: 8),
-                                                Text(
-                                                  productData['product_name'] ?? "Unknown Product",
-                                                  style: TextStyle(
-                                                    fontSize: 18,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Colors.black.withOpacity(0.8),
+                                          Wrap(
+                                            spacing: 4, 
+                                            runSpacing: 4,
+                                            children: [
+                                              if (productData['brands'] != null)
+                                                Container(
+                                                  padding: const EdgeInsets.symmetric(
+                                                    horizontal: 8,
+                                                    vertical: 4,
                                                   ),
-                                                  maxLines: 2,
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                                const SizedBox(height: 4),
-                                                if (productData['quantity'] != null)
-                                                  Text(
-                                                    productData['quantity']!,
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.blue.shade100,
+                                                    borderRadius: BorderRadius.circular(8),
+                                                  ),
+                                                  child: Text(
+                                                    productData['brands']!,
                                                     style: TextStyle(
-                                                      fontSize: 14,
-                                                      color: Colors.grey.shade700,
+                                                      color: Colors.blue.shade800,
+                                                      fontSize: 12,
+                                                      fontWeight: FontWeight.w500,
                                                     ),
                                                     maxLines: 1,
                                                     overflow: TextOverflow.ellipsis,
                                                   ),
-                                              ],
-                                            ),
+                                                ),
+                                            ],
                                           ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            productData['product_name'] ?? "Unknown Product",
+                                            style: TextStyle(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.black.withOpacity(0.8),
+                                            ),
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          const SizedBox(height: 4),
+                                          if (productData['quantity'] != null)
+                                            Text(
+                                              productData['quantity']!,
+                                              style: TextStyle(
+                                                fontSize: 14,
+                                                color: Colors.grey.shade700,
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
                                         ],
                                       ),
-                            const SizedBox(height: 16),
-                                      SingleChildScrollView(
-                                        scrollDirection: Axis.horizontal,
-                                        child: Row(
-                          children: [
-                                            if (productData['categories'] != null)
-                                              _buildInfoChip(
-                                                Icons.category,
-                                                "Categories",
-                                                productData['categories']!,
-                                              ),
-                                            const SizedBox(width: 8),
-                                            if (productData['countries'] != null)
-                                              _buildInfoChip(
-                                                Icons.public,
-                                                "Origin",
-                                                productData['countries']!,
-                                              ),
-                                          ],
-                                        ),
-                                      ),
-                            const SizedBox(height: 16),
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: Container(
-                                              padding: const EdgeInsets.symmetric(vertical: 12),
-                                              decoration: BoxDecoration(
-                                                color: isSafe ? Colors.green.shade50 : Colors.red.shade50,
-                                                borderRadius: BorderRadius.circular(12),
-                                                border: Border.all(
-                                                  color: isSafe ? Colors.green.shade200 : Colors.red.shade200,
-                                                ),
-                                              ),
-                                              child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                                  Icon(
-                                                    isSafe ? Icons.check_circle : Icons.warning,
-                                                    color: isSafe ? Colors.green : Colors.red,
-                                                    size: 20,
-                                                  ),
-                                const SizedBox(width: 8),
-                                Text(
-                                                    isSafe ? "Safe for you" : "Not safe for you",
-                                  style: TextStyle(
-                                                      color: isSafe ? Colors.green.shade700 : Colors.red.shade700,
-                                                      fontWeight: FontWeight.bold,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
-
-                                      // Add preference match indicator
-                                      if (isSafe && !matchesPreferences) ...[
-                                        const SizedBox(height: 8),
-                                        Row(
-                                          children: [
-                                            Expanded(
-                                              child: Container(
-                                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.amber.shade50,
-                                                  borderRadius: BorderRadius.circular(12),
-                                                  border: Border.all(
-                                                    color: Colors.amber.shade200,
-                                                  ),
-                                                ),
-                                                child: Row(
-                                                  mainAxisAlignment: MainAxisAlignment.center,
-                                                  children: [
-                                                    Icon(
-                                                      Icons.info_outline,
-                                                      color: Colors.amber.shade700,
-                                                      size: 20,
-                                                    ),
-                                                    const SizedBox(width: 8),
-                                                    Flexible(
-                                                      child: Text(
-                                                        "Contains ingredients you prefer to avoid",
-                                                        style: TextStyle(
-                                                          color: Colors.amber.shade700,
-                                                          fontWeight: FontWeight.bold,
-                                                        ),
-                                    textAlign: TextAlign.center,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ),
-                                          ],
+                                const SizedBox(height: 16),
+                                SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  child: Row(
+                                    children: [
+                                      if (productData['categories'] != null)
+                                        _buildInfoChip(
+                                          Icons.category,
+                                          "Categories",
+                                          productData['categories']!,
                                         ),
-                                      ],
-                                      
-                                      // AI Analysis section for unsafe products
-                                      if (!isSafe) ...[
-                                        const SizedBox(height: 16),
-                                        Card(
-                                          margin: EdgeInsets.zero,
-                                          elevation: 2,
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius: BorderRadius.circular(12),
-                                            side: BorderSide(
-                                              color: Colors.red.shade200,
-                                              width: 1,
-                                            ),
-                                          ),
-                                          clipBehavior: Clip.antiAlias,
-                                          child: Theme(
-                                            data: Theme.of(context).copyWith(
-                                              dividerColor: Colors.transparent,
-                                            ),
-                                            child: ExpansionTile(
-                                              initiallyExpanded: _analysisExpanded,
-                                              onExpansionChanged: (expanded) {
-                                                setState(() {
-                                                  _analysisExpanded = expanded;
-                                                  if (expanded && _analysisResult == null) {
-                                                    _runAnalysis(productData);
-                                                  }
-                                                });
-                                              },
-                                              collapsedBackgroundColor: Colors.red.shade50,
-                                              backgroundColor: Colors.red.shade50,
-                                              leading: Icon(
-                                                Icons.health_and_safety,
-                                                color: Colors.red.shade700,
-                                                size: 24,
-                                              ),
-                                              title: Text(
-                                                "AI Health Analysis",
-                                                style: TextStyle(
-                                                  fontSize: 16,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: Colors.red.shade800,
-                                                ),
-                                              ),
-                                              trailing: Icon(
-                                                _analysisExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                                                color: Colors.red.shade700,
-                                              ),
-                                              children: [
-                                                if (_isAnalyzing)
-                                                  Padding(
-                        padding: const EdgeInsets.all(16.0),
-                                                    child: Center(
-                        child: Column(
-                          children: [
-                                                          CircularProgressIndicator(
-                                                            strokeWidth: 3,
-                                                            color: Colors.red.shade400,
-                                                          ),
-                            const SizedBox(height: 16),
-                                                          Text(
-                                                            "Analyzing product with AI...",
-                                                            style: TextStyle(
-                                                              color: Colors.red.shade700,
-                                                              fontWeight: FontWeight.w500,
-                                                            ),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  )
-                                                else if (_analysisResult != null)
-                                                  Container(
-                                                    padding: const EdgeInsets.all(16.0),
-                                                    color: Colors.white,
-                                                    child: Column(
-                                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                                      children: [
-                                                        if (_analysisResult!.isError)
-                                                          Text(
-                                                            _analysisResult!.errorMessage,
-                                                            style: TextStyle(
-                                                              color: Colors.red.shade800,
-                                                              fontSize: 14,
-                                                            ),
-                                                          )
-                                                        else ...[
-                                                          Text(
-                                                            "Why this product may not be safe for you:",
-                                                            style: TextStyle(
-                                                              fontSize: 14,
-                                                              fontWeight: FontWeight.w600,
-                                                              color: Colors.red.shade800,
-                                                            ),
-                                                          ),
-                                                          const SizedBox(height: 8),
-                                                          Text(
-                                                            _analysisResult!.explanation,
-                                                            style: TextStyle(
-                                                              fontSize: 14, 
-                                                              height: 1.5,
-                                                              color: Colors.black87,
-                                                            ),
-                                                          ),
-                                                          if (_analysisResult!.healthInsights.isNotEmpty) ...[
-                                                            const SizedBox(height: 16),
-                                                            Text(
-                                                              "Health Insights:",
-                                                              style: TextStyle(
-                                                                fontSize: 14,
-                                                                fontWeight: FontWeight.w600,
-                                                                color: Colors.red.shade800,
-                                                              ),
-                                                            ),
-                                                            const SizedBox(height: 8),
-                                                            ...List.generate(
-                                                              _analysisResult!.healthInsights.length,
-                                                              (index) => Padding(
-                                                                padding: const EdgeInsets.only(bottom: 10.0),
-                                                                child: Container(
-                                                                  decoration: BoxDecoration(
-                                                                    color: Colors.red.shade50.withOpacity(0.5),
-                                                                    borderRadius: BorderRadius.circular(8),
-                                                                    border: Border.all(
-                                                                      color: Colors.red.shade100,
-                                                                      width: 1,
-                                                                    ),
-                                                                  ),
-                                                                  padding: const EdgeInsets.all(10),
-                                                                  child: Row(
-                                                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                                                    children: [
-                                                                      Icon(
-                                                                        Icons.priority_high,
-                                                                        size: 18,
-                                                                        color: Colors.red.shade700,
-                                                                      ),
-                                                                      const SizedBox(width: 10),
-                                                                      Expanded(
-                                                                        child: Text(
-                                                                          _analysisResult!.healthInsights[index],
-                                                                          style: TextStyle(
-                                                                            fontSize: 13,
-                                                                            height: 1.4,
-                                                                            fontWeight: FontWeight.w500,
-                                                                            color: Colors.black.withOpacity(0.8),
-                                                                          ),
-                                                                        ),
-                                                                      ),
-                                                                    ],
-                                                                  ),
-                                                                ),
-                                                              ),
-                                                            ),
-                                                          ],
-                                                          if (_analysisResult!.recommendations.isNotEmpty) ...[
-                                                            const SizedBox(height: 16),
-                                                            Text(
-                                                              "Recommendations:",
-                                                              style: TextStyle(
-                                                                fontSize: 14,
-                                                                fontWeight: FontWeight.w600,
-                                                                color: Colors.blue.shade800,
-                                                              ),
-                                                            ),
-                                                            const SizedBox(height: 8),
-                                                            ...List.generate(
-                                                              _analysisResult!.recommendations.length,
-                                                              (index) => Padding(
-                                                                padding: const EdgeInsets.only(bottom: 8.0),
-                                                                child: Row(
-                                                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                                                  children: [
-                                                                    Icon(
-                                                                      Icons.tips_and_updates,
-                                                                      size: 16,
-                                                                      color: Colors.blue.shade700,
-                                                                    ),
-                                                                    const SizedBox(width: 8),
-                                                                    Expanded(
-                                                                      child: Text(
-                                                                        _analysisResult!.recommendations[index],
-                                style: const TextStyle(
-                                                                          fontSize: 13,
-                                                                          height: 1.4,
-                                                                        ),
-                                                                      ),
-                                                                    ),
-                                                                  ],
-                                                                ),
-                                                              ),
-                                                            ),
-                                                          ],
-                                                          
-                                                          // Add alternative products section for unsafe products
-                                                          if (!isSafe) ...[
-                                                            const SizedBox(height: 20),
-                                                            Text(
-                                                              "Suggested Alternatives:",
-                                                              style: TextStyle(
-                                        fontSize: 14,
-                                                                fontWeight: FontWeight.w600,
-                                                                color: Colors.green.shade800,
-                                                              ),
-                                                            ),
-                            const SizedBox(height: 12),
-                                                            Container(
-                                                              height: 200,
-                                                              margin: const EdgeInsets.only(bottom: 8),
-                                                              child: FutureBuilder<List<Map<String, dynamic>>>(
-                                                                future: _fetchAlternatives(widget.barcode, productData),
-                                                                builder: (context, snapshot) {
-                                                                  if (snapshot.connectionState == ConnectionState.waiting) {
-                                                                    return Center(
-                                                                      child: Column(
-                                                                        mainAxisAlignment: MainAxisAlignment.center,
-                                                                        children: [
-                                                                          CircularProgressIndicator(
-                                                                            strokeWidth: 2,
-                                                                            color: Colors.green.shade400,
-                                                                          ),
-                                                                          const SizedBox(height: 12),
-                                                                          Text(
-                                                                            "Finding healthier alternatives...",
-                                                                            style: TextStyle(
-                                                                              color: Colors.green.shade700,
-                                                                              fontSize: 13,
-                                                                            ),
-                                                                          ),
-                                                                        ],
-                                                                      ),
-                                                                    );
-                                                                  } else if (snapshot.hasError || !snapshot.hasData) {
-                                                                    return Center(
-                                                                      child: Text(
-                                                                        "Couldn't find alternatives at this time",
-                                                                        style: TextStyle(
-                                                                          color: Colors.grey.shade600,
-                                                                          fontSize: 13,
-                                        fontStyle: FontStyle.italic,
-                                                                        ),
-                                                                      ),
-                                                                    );
-                                                                  } else {
-                                                                    final alternatives = snapshot.data!;
-                                                                    // Filter alternatives to ensure only equal or better Nutri-Score is shown
-                                                                    final nutriScoreMap = {
-                                                                      'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5
-                                                                    };
-                                                                    
-                                                                    // Get original product's Nutri-Score
-                                                                    final originalNutriScore = 
-                                                                      (productData['nutriscore_grade'] ?? 'E').toString().toUpperCase();
-                                                                    
-                                                                    // Filter alternatives with better or equal Nutri-Score
-                                                                    final filteredAlternatives = alternatives.where((alt) {
-                                                                      final altNutriScore = (alt['nutriscore_grade'] ?? 'E').toString().toUpperCase();
-                                                                      
-                                                                      // If original is B, only show A
-                                                                      if (originalNutriScore == 'B' && altNutriScore != 'A') {
-                                                                        return false;
-                                                                      }
-                                                                      
-                                                                      // For other grades, ensure alternative is better or equal
-                                                                      final originalScore = nutriScoreMap[originalNutriScore] ?? 5;
-                                                                      final alternativeScore = nutriScoreMap[altNutriScore] ?? 5;
-                                                                      
-                                                                      return alternativeScore <= originalScore;
-                                                                    }).toList();
-                                                                    
-                                                                    // Show message if no suitable alternatives after filtering
-                                                                    if (filteredAlternatives.isEmpty) {
-                                                                      return Center(
-                                                                        child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                                                            Icon(Icons.info_outline, 
-                                                                              color: Colors.grey.shade400, size: 32),
-                                                                            const SizedBox(height: 12),
-                                Text(
-                                                                              "No better alternatives found for this product",
-                                  style: TextStyle(
-                                                                                color: Colors.grey.shade600,
-                                                                                fontSize: 13,
-                                                                                fontStyle: FontStyle.italic,
-                                                                              ),
-                                ),
-                              ],
-                            ),
-                                                                      );
-                                                                    }
-                                                                    
-                                                                    return ListView.builder(
-                                                                      scrollDirection: Axis.horizontal,
-                                                                      itemCount: filteredAlternatives.length,
-                                                                      itemBuilder: (context, index) {
-                                                                        final alternative = filteredAlternatives[index];
-                                                                        return Container(
-                                                                          width: 160,
-                                                                          margin: const EdgeInsets.only(right: 12),
-                                                                          decoration: BoxDecoration(
-                                                                            color: Colors.white,
-                                                                            borderRadius: BorderRadius.circular(12),
-                                                                            boxShadow: [
-                                                                              BoxShadow(
-                                                                                color: Colors.black.withOpacity(0.05),
-                                                                                blurRadius: 6,
-                                                                                offset: const Offset(0, 2),
-                                                                              ),
-                                                                            ],
-                                                                            border: Border.all(
-                                                                              color: Colors.green.shade100,
-                                                                              width: 1.5,
-                                                                            ),
-                                                                          ),
-                                                                          child: Column(
-                                                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                                                            children: [
-                                                                              // Nutriscore badge in header section
-                                                                              Container(
-                                                                                width: double.infinity,
-                                                                                padding: const EdgeInsets.symmetric(vertical: 10),
-                                                                                decoration: BoxDecoration(
-                                                                                  color: Colors.green.shade50,
-                                                                                  borderRadius: const BorderRadius.only(
-                                                                                    topLeft: Radius.circular(11),
-                                                                                    topRight: Radius.circular(11),
-                                                                                  ),
-                                                                                ),
-                                                                                child: Row(
-                                                                                  mainAxisAlignment: MainAxisAlignment.center,
-                                                                                  children: [
-                                                                                    Container(
-                                                                                      padding: const EdgeInsets.symmetric(
-                                                                                        horizontal: 8,
-                                                                                        vertical: 4,
-                                                                                      ),
-                                                                                      decoration: BoxDecoration(
-                                                                                        color: _getNutriScoreColor(alternative['nutriscore_grade'] ?? 'B'),
-                                                                                        borderRadius: BorderRadius.circular(6),
-                                                                                      ),
-                                                                                      child: Text(
-                                                                                        "Nutri-Score ${alternative['nutriscore_grade']?.toUpperCase() ?? 'B'}",
-                                                                                        style: const TextStyle(
-                                                                                          color: Colors.white,
-                                                                                          fontSize: 12,
-                                                                                          fontWeight: FontWeight.bold,
-                                                                                        ),
-                                                                                      ),
-                                                                                    ),
-                                                                                  ],
-                                                                                ),
-                                                                              ),
-                                                                              // Details with more padding without image
-                              Padding(
-                                                                                padding: const EdgeInsets.all(12.0),
-                                                                                child: Column(
-                                                                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                                                                  children: [
-                                                                                    Text(
-                                                                                      alternative['brand'] ?? '',
-                                                                                      style: TextStyle(
-                                                                                        fontSize: 11,
-                                                                                        color: Colors.grey.shade700,
-                                                                                      ),
-                                                                                      maxLines: 1,
-                                                                                      overflow: TextOverflow.ellipsis,
-                                                                                    ),
-                                                                                    const SizedBox(height: 4),
-                                                                                    Text(
-                                                                                      alternative['product_name'] ?? 'Alternative Product',
-                                    style: const TextStyle(
-                                        fontSize: 14,
-                                                                                        fontWeight: FontWeight.bold,
-                                                                                      ),
-                                                                                      maxLines: 2,
-                                                                                      overflow: TextOverflow.ellipsis,
-                                                                                    ),
-                                                                                    const SizedBox(height: 6),
-                                                                                    Text(
-                                                                                      alternative['description'] ?? '',
-                                                                                      style: TextStyle(
-                                                                                        fontSize: 12,
-                                                                                        color: Colors.grey.shade800,
-                                                                                        height: 1.3,
-                                                                                      ),
-                                                                                      maxLines: 4,
-                                                                                      overflow: TextOverflow.ellipsis,
-                              ),
-                          ],
-                        ),
-                      ),
-                                                                            ],
-                                                                          ),
-                                                                        );
-                                                                      },
-                                                                    );
-                                                                  }
-                                                                },
-                                                              ),
-                                                            ),
-                                                          ],
-                                                        ],
-                                                      ],
-                                                    ),
-                                                  ),
-                                              ],
-                                            ),
-                                          ),
+                                      const SizedBox(width: 8),
+                                      if (productData['countries'] != null)
+                                        _buildInfoChip(
+                                          Icons.public,
+                                          "Origin",
+                                          productData['countries']!,
                                         ),
-                                      ],
                                     ],
                                   ),
                                 ),
-                              ),
-                          ],
+                                const SizedBox(height: 16),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(vertical: 12),
+                                        decoration: BoxDecoration(
+                                          color: isSafe ? Colors.green.shade50 : Colors.red.shade50,
+                                          borderRadius: BorderRadius.circular(12),
+                                          border: Border.all(
+                                            color: isSafe ? Colors.green.shade200 : Colors.red.shade200,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Icon(
+                                              isSafe ? Icons.check_circle : Icons.warning,
+                                              color: isSafe ? Colors.green : Colors.red,
+                                              size: 20,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Text(
+                                              isSafe ? "Safe for you" : "Not safe for you",
+                                              style: TextStyle(
+                                                color: isSafe ? Colors.green.shade700 : Colors.red.shade700,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+
+                                // Add preference match indicator
+                                if (isSafe && !matchesPreferences) ...[
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(vertical: 12),
+                                          decoration: BoxDecoration(
+                                            color: Colors.amber.shade50,
+                                            borderRadius: BorderRadius.circular(12),
+                                            border: Border.all(
+                                              color: Colors.amber.shade200,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            mainAxisAlignment: MainAxisAlignment.center,
+                                            children: [
+                                              Icon(
+                                                Icons.info_outline,
+                                                color: Colors.amber.shade700,
+                                                size: 20,
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Flexible(
+                                                child: Text(
+                                                  "Contains ingredients you prefer to avoid",
+                                                  style: TextStyle(
+                                                    color: Colors.amber.shade700,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                  textAlign: TextAlign.center,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
                         ),
                       ),
-                        // Add space to account for the overlapping card
-                        const SizedBox(height: 140),
-                      ],
-                    ),
-                  ),
-                  
-                  // Health Analysis Section
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-                    sliver: SliverList(
-                      delegate: SliverChildListDelegate([
-                        Text(
+                      
+                      // AI Analysis card (if product is not safe)
+                      if (!isSafe)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          child: _buildFixedExpandablePanel(
+                            context,
+                            productData,
+                            isSafe,
+                            matchesPreferences,
+                          ),
+                        ),
+                      
+                      // Health Analysis Section Title
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                        child: Text(
                           "Health Analysis",
                           style: TextStyle(
                             fontSize: 20,
@@ -1095,25 +1038,18 @@ class _ResultsPageState extends State<ResultsPage> {
                             color: Colors.black.withOpacity(0.8),
                           ),
                         ),
-                        const SizedBox(height: 16),
-                        
-                        // Add AI analysis panel at the top of the Health Analysis section
-                        if (!isSafe)
-                          _buildFixedExpandablePanel(
-                            context,
-                            productData,
-                            isSafe,
-                            matchesPreferences,
-                          ),
-                          
-                        const SizedBox(height: 16),
-                        
-                        // Nutrition Facts
-                        _buildNutrientsSection(productData, screenWidth),
-                        const SizedBox(height: 16),
-                        
-                        // Ingredients
-                        _buildSectionCard(
+                      ),
+
+                      // Nutrition Facts
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                        child: _buildNutrientsSection(productData, screenWidth),
+                      ),
+                      
+                      // Ingredients
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: _buildSectionCard(
                           title: "Ingredients",
                           icon: Icons.receipt,
                           content: productData['ingredients_text'] != null
@@ -1136,10 +1072,12 @@ class _ResultsPageState extends State<ResultsPage> {
                                   ),
                                 ),
                         ),
-                        const SizedBox(height: 16),
-                        
-                        // Allergens
-                        _buildSectionCard(
+                      ),
+                      
+                      // Allergens
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: _buildSectionCard(
                           title: "Allergens",
                           icon: Icons.warning_amber,
                           content: productData['allergens_tags'] != null
@@ -1186,10 +1124,12 @@ class _ResultsPageState extends State<ResultsPage> {
                                   ),
                                 ),
                         ),
-                        const SizedBox(height: 16),
-                        
-                        // Additives
-                        _buildSectionCard(
+                      ),
+                      
+                      // Additives
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: _buildSectionCard(
                           title: "Additives",
                           icon: Icons.science,
                           content: productData['additives_tags'] != null && 
@@ -1226,26 +1166,29 @@ class _ResultsPageState extends State<ResultsPage> {
                                   ),
                                 ),
                         ),
-                        const SizedBox(height: 16),
-                        
-                        // Action Buttons
-                        // Add personalized Nutri-Score explanation section before the action buttons
-                        if (_analysisResult != null && !_isAnalyzing) ...[
-                          _buildPersonalizedNutriScoreExplanation(context, _analysisResult!),
-                    const SizedBox(height: 20),
-                        ],
-
-                        Row(
+                      ),
+                      
+                      // Personalized Nutri-Score explanation
+                      if (_analysisResult != null && !_isAnalyzing) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          child: _buildPersonalizedNutriScoreExplanation(context, _analysisResult!),
+                        ),
+                      ],
+                      
+                      // Action Buttons
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                        child: Row(
                           children: [
                             Expanded(
                               child: ElevatedButton.icon(
                                 onPressed: () {
-                                  // Implement text-to-speech functionality
-                                  _speak("Product information for ${productData['product_name']}");
+                                  _speak(productData);
                                 },
-                      icon: const Icon(Icons.volume_up),
-                                label: const Text("Listen"),
-                      style: ElevatedButton.styleFrom(
+                                icon: Icon(_isSpeaking ? Icons.stop : Icons.volume_up),
+                                label: Text(_isSpeaking ? "Stop" : "Listen"),
+                                style: ElevatedButton.styleFrom(
                                   foregroundColor: const Color(0xFF4CAF50),
                                   backgroundColor: Colors.white,
                                   padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1264,7 +1207,7 @@ class _ResultsPageState extends State<ResultsPage> {
                                 },
                                 icon: const Icon(Icons.qr_code_scanner),
                                 label: const Text("New Scan"),
-                      style: ElevatedButton.styleFrom(
+                                style: ElevatedButton.styleFrom(
                                   foregroundColor: Colors.white,
                                   backgroundColor: const Color(0xFF4CAF50),
                                   padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1274,12 +1217,11 @@ class _ResultsPageState extends State<ResultsPage> {
                                   elevation: 0,
                                 ),
                               ),
-                              ),
+                            ),
                           ],
                         ),
-                        const SizedBox(height: 16),
-                      ]),
-                    ),
+                      ),
+                    ]),
                   ),
                 ],
               ),
@@ -1360,7 +1302,7 @@ class _ResultsPageState extends State<ResultsPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-      padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(16),
             child: Row(
               children: [
                 Icon(
@@ -1409,9 +1351,9 @@ class _ResultsPageState extends State<ResultsPage> {
         style: TextStyle(
           fontSize: 12,
           color: Colors.red.shade900,
-              ),
-            ),
-          );
+        ),
+      ),
+    );
   }
 
   Widget _buildAdditive(String additive) {
@@ -1910,25 +1852,25 @@ class _ResultsPageState extends State<ResultsPage> {
     return StatefulBuilder(
       builder: (BuildContext context, StateSetter panelSetState) {
         // Handle tap to expand/collapse or run analysis
-        void togglePanel() {
+        void togglePanel() async {
           if (_analysisResult == null && !_isAnalyzing) {
             // Start analysis and update both states
             setState(() => _isAnalyzing = true);
             panelSetState(() => _isAnalyzing = true);
             
             // Run analysis
-            _runAnalysis(productData).then((_) {
-              if (mounted) {
-                setState(() {
-                  _isAnalyzing = false;
-                  _analysisExpanded = true;
-                });
-                panelSetState(() {
-                  _isAnalyzing = false;
-                  _analysisExpanded = true;
-                });
-              }
-            });
+            await _runAnalysis(productData);
+            
+            if (mounted) {
+              setState(() {
+                _isAnalyzing = false;
+                _analysisExpanded = true;
+              });
+              panelSetState(() {
+                _isAnalyzing = false;
+                _analysisExpanded = true;
+              });
+            }
           } else {
             // Just toggle expansion
             final newState = !_analysisExpanded;

@@ -87,6 +87,9 @@ dependencies:
   # New dependencies for Gemini AI integration
   path_provider: ^2.0.15
   fl_chart: ^0.64.0
+  
+  # For sharing content
+  share_plus: ^7.2.1
 
 
 

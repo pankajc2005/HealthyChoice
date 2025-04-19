@@ -3,11 +3,15 @@ import 'package:flutter_typeahead/flutter_typeahead.dart';
 import '../api/api_service.dart';
 import '../models/product_scan.dart';
 import '../services/scan_history_service.dart';
+import '../services/cart_service.dart';
 import '../widgets/allergen_filter_chip.dart';
 import '../widgets/recent_scan_item.dart';
 import 'camera_screen.dart';
 import 'results_page.dart';
 import 'models_info_screen.dart';
+import 'cart_screen.dart';
+import 'alternative_product_screen.dart';
+import 'favorites_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   @override
@@ -18,6 +22,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _searchController = TextEditingController();
   bool _isLoading = false;
   String? _errorMessage;
+  int _cartCount = 0;
 
   final List<Map<String, dynamic>> allergenFilters = [
     {'label': 'Gluten Free', 'status': 'safe', 'icon': Icons.check, 'color': Colors.green},
@@ -34,6 +39,14 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadRecentScans();
+    _loadCartCount();
+  }
+
+  Future<void> _loadCartCount() async {
+    final count = await CartService.getCartCount();
+    setState(() {
+      _cartCount = count;
+    });
   }
 
   Future<void> _loadRecentScans() async {
@@ -64,23 +77,79 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _searchProduct(String query) async {
     if (query.isEmpty) return;
+    
+    // Show loading indicator in the UI
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
-
+    
     try {
-      final productData = await ApiService.getProductInfo(query);
+      // Trim and clean up the query
+      final cleanQuery = query.trim();
+      
+      // Check if query might be a barcode
+      bool mightBeBarcode = cleanQuery.length >= 8 && 
+                           cleanQuery.length <= 13 && 
+                           RegExp(r'^\d+$').hasMatch(cleanQuery);
+      
+      if (mightBeBarcode) {
+        // Direct search with barcode
+        final productData = await ApiService.getProductInfo(cleanQuery);
+        if (!mounted) return;
+        
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ResultsPage(barcode: cleanQuery),
+          ),
+        );
+      } else {
+        // Show a temporary loading snackbar
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 20, 
+                  height: 20, 
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                ),
+                SizedBox(width: 12),
+                Text('Searching for "$cleanQuery"...'),
+              ],
+            ),
+            duration: Duration(seconds: 1),
+          ),
+        );
+        
+        // Search by product name
+        final productData = await ApiService.getProductInfo(cleanQuery);
+        if (!mounted) return;
+        
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ResultsPage(barcode: cleanQuery),
+          ),
+        );
+      }
+    } catch (e) {
       if (!mounted) return;
-
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => ResultsPage(barcode: query),
+      
+      setState(() => _errorMessage = "Product not found. Try a different search term.");
+      
+      // Show a more helpful error message
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not find "$query". Try scanning the barcode instead.'),
+          action: SnackBarAction(
+            label: 'SCAN',
+            onPressed: _openCamera,
+          ),
+          duration: Duration(seconds: 4),
         ),
       );
-    } catch (e) {
-      setState(() => _errorMessage = "Error fetching product data.");
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -97,6 +166,38 @@ class _HomeScreenState extends State<HomeScreen> {
     if (result != null) {
       print('Scanned Barcode: $result');
       _loadRecentScans();
+      _loadCartCount();
+    }
+  }
+
+  void _openCart() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => CartScreen()),
+    );
+    
+    _loadCartCount();
+  }
+
+  void _openAlternatives(String barcode) async {
+    try {
+      final productData = await ApiService.getProductInfo(barcode);
+      
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AlternativeProductScreen(
+            barcode: barcode,
+            productData: productData,
+          ),
+        ),
+      );
+      
+      _loadCartCount();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading product information')),
+      );
     }
   }
 
@@ -140,6 +241,50 @@ class _HomeScreenState extends State<HomeScreen> {
                               tooltip: 'View Available AI Models',
                             ),
                             IconButton(
+                              icon: Icon(Icons.favorite_outline, color: Colors.black),
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (context) => FavoritesScreen()),
+                                );
+                              },
+                              tooltip: 'Favorites',
+                            ),
+                            Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                IconButton(
+                                  icon: Icon(Icons.shopping_cart_outlined, color: Colors.black),
+                                  onPressed: _openCart,
+                                  tooltip: 'Shopping Cart',
+                                ),
+                                if (_cartCount > 0)
+                                  Positioned(
+                                    right: 8,
+                                    top: 8,
+                                    child: Container(
+                                      padding: EdgeInsets.all(2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red,
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      constraints: BoxConstraints(
+                                        minWidth: 16,
+                                        minHeight: 16,
+                                      ),
+                                      child: Text(
+                                        '$_cartCount',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10,
+                                        ),
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            IconButton(
                               icon: Icon(Icons.notifications_none, color: Colors.black),
                               onPressed: () {},
                             ),
@@ -158,17 +303,53 @@ class _HomeScreenState extends State<HomeScreen> {
                             contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                             hintText: 'Search products or scan barcode',
                             prefixIcon: Icon(Icons.search),
+                            suffixIcon: IconButton(
+                              icon: Icon(Icons.clear),
+                              onPressed: () {
+                                _searchController.clear();
+                              },
+                            ),
                             border: InputBorder.none,
                           ),
+                          onSubmitted: (value) {
+                            if (value.isNotEmpty) {
+                              _searchProduct(value);
+                            }
+                          },
                         ),
                         suggestionsCallback: (pattern) async {
+                          if (pattern.length < 3) return [];
                           return await ApiService.getSuggestions(pattern);
                         },
-                        itemBuilder: (context, suggestion) => ListTile(title: Text(suggestion)),
+                        itemBuilder: (context, suggestion) => ListTile(
+                          title: Text(suggestion),
+                          leading: Icon(Icons.fastfood, color: Color(0xFF6D30EA)),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                        ),
                         onSuggestionSelected: (suggestion) {
                           _searchController.text = suggestion;
                           _searchProduct(suggestion);
                         },
+                        noItemsFoundBuilder: (context) => Container(
+                          height: 50,
+                          child: Center(
+                            child: Text('No products found. Press enter to search.'),
+                          ),
+                        ),
+                        loadingBuilder: (context) => Container(
+                          height: 50,
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Color(0xFF6D30EA),
+                            ),
+                          ),
+                        ),
+                        keepSuggestionsOnLoading: false,
+                        hideSuggestionsOnKeyboardHide: false,
+                        hideOnEmpty: false,
+                        hideOnError: false,
+                        animationDuration: Duration(milliseconds: 300),
                       ),
                     ),
                     if (_errorMessage != null)
@@ -242,15 +423,33 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
 
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openCamera,
-        backgroundColor: const Color(0xFF6D30EA),
-        icon: const Icon(Icons.qr_code_scanner, color: Colors.white),
-        label: const Text(
-          'Scan Product',
-          style: TextStyle(color: Colors.white),
-        ),
-        elevation: 4,
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          if (_recentScans.isNotEmpty)
+            FloatingActionButton(
+              heroTag: 'buy_button',
+              onPressed: () {
+                _openAlternatives(_recentScans.first.barcode);
+              },
+              backgroundColor: Colors.green,
+              child: const Icon(Icons.shopping_bag, color: Colors.white),
+              mini: true,
+              tooltip: 'Find Better Products',
+            ),
+          const SizedBox(height: 10),
+          FloatingActionButton.extended(
+            heroTag: 'scan_button',
+            onPressed: _openCamera,
+            backgroundColor: const Color(0xFF6D30EA),
+            icon: const Icon(Icons.qr_code_scanner, color: Colors.white),
+            label: const Text(
+              'Scan Product',
+              style: TextStyle(color: Colors.white),
+            ),
+            elevation: 4,
+          ),
+        ],
       ),
     );
   }
@@ -359,10 +558,21 @@ class _HomeScreenState extends State<HomeScreen> {
             itemBuilder: (context, index) {
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                child: RecentScanItem(
-                  scan: _recentScans[index],
-                  isSmallScreen: isSmallScreen,
-                  onDelete: () => _removeScan(_recentScans[index]),
+                child: InkWell(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ResultsPage(barcode: _recentScans[index].barcode),
+                      ),
+                    );
+                  },
+                  child: RecentScanItem(
+                    scan: _recentScans[index],
+                    isSmallScreen: isSmallScreen,
+                    onDelete: () => _removeScan(_recentScans[index]),
+                    onBuy: () => _openAlternatives(_recentScans[index].barcode),
+                  ),
                 ),
               );
             },

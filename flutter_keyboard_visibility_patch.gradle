@@ -1,4 +1,3 @@
-group 'com.jrai.flutter_keyboard_visibility'
 version '1.0'
 
 buildscript {

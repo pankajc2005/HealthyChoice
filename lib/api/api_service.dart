@@ -44,19 +44,43 @@ class ApiService {
 
   /// ✅ ADD THIS METHOD FOR SEARCH SUGGESTIONS
   static Future<List<String>> getSuggestions(String query) async {
-    final url = Uri.parse('https://world.openfoodfacts.org/cgi/search.pl?search_terms=$query&search_simple=1&action=process&json=1');
-    final response = await http.get(url);
+    if (query.length < 3) return [];
+    
+    try {
+      // Use a cached flag to track ongoing requests 
+      final cacheKey = 'suggestion_$query';
+      
+      // Limit results to 10 for faster response
+      final url = Uri.parse('https://world.openfoodfacts.org/cgi/search.pl?search_terms=$query&search_simple=1&action=process&json=1&page_size=10');
+      
+      final response = await http.get(url);
 
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      final products = data['products'] as List<dynamic>;
-      return products
-          .map<String>((item) => item['product_name']?.toString() ?? '')
-          .where((name) => name.isNotEmpty)
-          .toSet()
-          .toList();
-    } else {
-      throw Exception("Failed to fetch suggestions");
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final products = data['products'] as List<dynamic>;
+        
+        // Create a more complete suggestion list combining product name and brand when available
+        return products.map<String>((item) {
+          final name = item['product_name']?.toString() ?? '';
+          final brand = item['brands']?.toString() ?? '';
+          
+          if (name.isEmpty) return '';
+          
+          // Include brand in suggestion if available
+          if (brand.isNotEmpty) {
+            return '$name - $brand';
+          }
+          return name;
+        })
+        .where((name) => name.isNotEmpty)
+        .toSet() // Remove duplicates
+        .toList();
+      } else {
+        return [];
+      }
+    } catch (e) {
+      print("Error fetching suggestions: $e");
+      return [];
     }
   }
 

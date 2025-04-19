@@ -42,6 +42,15 @@ class ScanHistoryService {
       }
       
       final jsonList = jsonDecode(jsonString) as List;
+      
+      // Limit the number of scans to load for better performance
+      if (jsonList.length > 10) {
+        final trimmedList = jsonList.sublist(0, 10);
+        // Save the trimmed list back to preferences to improve future load times
+        await prefs.setString(_scanHistoryKey, jsonEncode(trimmedList));
+        return trimmedList.map((json) => _scanFromJson(json)).toList();
+      }
+      
       return jsonList.map((json) => _scanFromJson(json)).toList();
     } catch (e) {
       print('Error retrieving scan history: $e');
